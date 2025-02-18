@@ -4,7 +4,7 @@ from torch.nn import functional as F
 
 # hyperparameters
 batch_size = 128 # how many independent sequences will we process in parallel?
-block_size = 8 # what is the maximum context length for predictions?
+context_length = 8 # what is the maximum context length for predictions?
 max_iters = 30000
 eval_interval = 300
 learning_rate = 1e-2
@@ -23,29 +23,29 @@ with open('shakespear.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
 # here are all the unique characters that occur in this text
-chars = sorted(list(set(text)))
-vocab_size = len(chars)
+vocabulary = sorted(list(set(text)))
+vocabulary_size = len(vocabulary)
 # create a mapping from characters to integers
-stoi = { ch:i for i,ch in enumerate(chars) }
-itos = { i:ch for i,ch in enumerate(chars) }
-encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
-decode = lambda l: ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
+string_to_int = { char:int for int,char in enumerate(vocabulary) }
+int_to_string = { int:char for int,char in enumerate(vocabulary) }
+tokenize = lambda s: [string_to_int[c] for c in s] # encoder: take a string, output a list of integers
+detokenize = lambda l: ''.join([int_to_string[i] for i in l]) # decoder: take a list of integers, output a string
 
 # Train and test splits
-data = torch.tensor(encode(text), dtype=torch.long)
-n = int(0.9*len(data)) # first 90% will be train, rest val
-train_data = data[:n]
-val_data = data[n:]
+tokenized_data = torch.tensor(tokenize(text), dtype=torch.long)
+training_data_size = int(0.9*len(tokenized_data)) # first 90% will be train, rest val
+training_data = tokenized_data[:training_data_size]
+evaluation_data = tokenized_data[training_data_size:]
 
 # data loading
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
-    data = train_data if split == 'train' else val_data
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[i:i+block_size] for i in ix])
-    y = torch.stack([data[i+1:i+block_size+1] for i in ix])
-    x, y = x.to(device), y.to(device)
-    return x, y
+    data = training_data if split == 'train' else evaluation_data
+    random_offsets = torch.randint(len(data) - context_length, (batch_size,))
+    starting_token = torch.stack([data[offset:offset+context_length] for offset in random_offsets])
+    solution_token = torch.stack([data[offset+1:offset+context_length+1] for offset in random_offsets])
+    starting_token, solution_token = starting_token.to(device), solution_token.to(device)
+    return starting_token, solution_token
 
 @torch.no_grad()
 def estimate_loss():
@@ -64,43 +64,43 @@ def estimate_loss():
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
 
-    def __init__(self, vocab_size):
+    def __init__(self):
         super().__init__()
         # each token directly reads off the logits for the next token from a lookup table
-        self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+        self.token_embedding_table = nn.Embedding(vocabulary_size, vocabulary_size)
 
-    def forward(self, idx, targets=None):
+    def forward(self, starting_tokens, solution_tokens=None):
 
         # idx and targets are both (B,T) tensor of integers
-        logits = self.token_embedding_table(idx) # (B,T,C)
+        logits = self.token_embedding_table(starting_tokens) # (B,T,C)
 
-        if targets is None:
+        if solution_tokens is None:
             loss = None
         else:
-            B, T, C = logits.shape
-            logits = logits.view(B*T, C)
-            targets = targets.view(B*T)
-            loss = F.cross_entropy(logits, targets)
+            batch_size, time_steps, channel_size = logits.shape
+            logits = logits.view(batch_size*time_steps, channel_size)
+            solution_tokens = solution_tokens.view(batch_size*time_steps)
+            loss = F.cross_entropy(logits, solution_tokens)
 
         return logits, loss
 
-    def generate(self, idx, max_new_tokens):
+    def generate(self, starting_tokens, max_new_token_number):
         # idx is (B, T) array of indices in the current context
-        for _ in range(max_new_tokens):
+        for _ in range(max_new_token_number):
             # get the predictions
-            logits, loss = self(idx)
+            logits, loss = self(starting_tokens)
             # focus only on the last time step
             logits = logits[:, -1, :] # becomes (B, C)
             # apply softmax to get probabilities
             probs = F.softmax(logits, dim=-1) # (B, C)
             # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+            next_token = torch.multinomial(probs, num_samples=1) # (B, 1)
             # append sampled index to the running sequence
-            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
-        return idx
+            starting_tokens = torch.cat((starting_tokens, next_token), dim=1) # (B, T+1)
+        return starting_tokens
 
-model = BigramLanguageModel(vocab_size)
-m = model.to(device)
+model = BigramLanguageModel()
+initialized_model = model.to(device)
 
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -113,14 +113,14 @@ for iter in range(max_iters):
         print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
     # sample a batch of data
-    xb, yb = get_batch('train')
+    batched_starting_token, batched_solution_token = get_batch('train')
 
     # evaluate the loss
-    logits, loss = model(xb, yb)
+    logits, loss = model(batched_starting_token, batched_solution_token)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
 
 # generate from the model
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+starting_context = torch.zeros((1, 1), dtype=torch.long, device=device)
+print(detokenize(initialized_model.generate(starting_context, max_new_token_number=500)[0].tolist()))
