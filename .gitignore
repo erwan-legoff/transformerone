@@ -1,0 +1,23 @@
+# Ignorer les fichiers d'environnement virtuel
+gptenv/
+.venv/
+
+# Ignorer les fichiers de cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignorer les fichiers de logs
+logs/
+*.log
+
+# Ignorer les fichiers générés (compilation, IDE, etc.)
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/
+
+# Ignorer les fichiers spécifiques à un projet
+config.json
+secrets.env
