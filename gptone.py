@@ -30,8 +30,8 @@ vocabulary_size = len(vocabulary)
 # create a mapping from characters to integers
 string_to_int = { char:int for int,char in enumerate(vocabulary) }
 int_to_string = { int:char for int,char in enumerate(vocabulary) }
-tokenize = lambda s: [string_to_int[c] for c in s] # encoder: take a string, output a list of integers
-detokenize = lambda l: ''.join([int_to_string[i] for i in l]) # decoder: take a list of integers, output a string
+tokenize = lambda string: [string_to_int[character] for character in string] # encoder: take a string, output a list of integers
+detokenize = lambda integers: ''.join([int_to_string[integer] for integer in integers]) # decoder: take a list of integers, output a string
 
 # Train and test splits
 tokenized_data = torch.tensor(tokenize(text), dtype=torch.long)
