@@ -3,13 +3,14 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters
-batch_size = 128 # how many independent sequences will we process in parallel?
-context_length = 8 # what is the maximum context length for predictions?
-max_iters = 30000
-eval_interval = 300
-learning_rate = 1e-2
+batch_size = 256 # how many independent sequences will we process in parallel?
+context_length = 15 # what is the maximum context length for predictions?
+max_iters = 1000000
+eval_interval = 5000
+learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters = 200
+eval_iters = 50
+embedding_dimension_count = 32
 
 print(torch.cuda.is_available())  # Doit retourner True si CUDA est actif
 print(torch.cuda.device_count())  # Nombre de GPU disponibles
@@ -61,18 +62,50 @@ def estimate_loss():
     model.train()
     return out
 
+class Head(nn.Module):
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(embedding_dimension_count, head_size, bias=False)
+        self.query = nn.Linear(embedding_dimension_count, head_size, bias=False)
+        self.value = nn.Linear(embedding_dimension_count, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
+    
+    def forward(self, current_token_context):
+        batch_size,time_step_count,channel_count = current_token_context.shape
+        key = self.key(current_token_context)
+        query = self.query(current_token_context)
+        attention_scores = query @ key.transpose(-2,-1) * channel_count**-0.5 # (B,T,C) @ (B,C,T) -> (B,T,T)
+        causal_attention_scores = attention_scores.masked_fill(self.tril[:time_step_count, :time_step_count] == 0, float('-inf')) # (B,T,T)
+        probabilistic_causal_attention = F.softmax(causal_attention_scores, dim=1) # (B,T,T)
+
+        value = self.value(current_token_context) # (B,T,C)
+        weighted_aggregation = probabilistic_causal_attention @ value # (B,T,T) @ (B,T,C) => (B,T,C)
+        return weighted_aggregation
+
+
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
 
     def __init__(self):
         super().__init__()
-        # each token directly reads off the logits for the next token from a lookup table
-        self.token_embedding_table = nn.Embedding(vocabulary_size, vocabulary_size)
+        # it's the identity of the token
+        self.token_embedding_table = nn.Embedding(vocabulary_size, embedding_dimension_count)
+        # the position is also embedded
+        self.position_embedding_table = nn.Embedding(context_length, embedding_dimension_count)
+        self.self_attention_head = Head(embedding_dimension_count)
+        # Will convert embeddings to logits
+        self.language_modeling_head = nn.Linear(embedding_dimension_count, vocabulary_size)
 
     def forward(self, starting_tokens, solution_tokens=None):
-
+        batch_size, time_steps = starting_tokens.shape
         # idx and targets are both (B,T) tensor of integers
-        logits = self.token_embedding_table(starting_tokens) # (B,T,C)
+        token_embeddings = self.token_embedding_table(starting_tokens) # (B,T,C)
+        
+        position_embeddings = self.position_embedding_table(torch.arange(time_steps, device=device))# (T,C)
+        
+        spatial_meaning_embedding = token_embeddings + position_embeddings
+        spatial_meaning_embedding = self.self_attention_head(spatial_meaning_embedding)
+        logits = self.language_modeling_head(spatial_meaning_embedding) # (B,T,Cvocab_size)
 
         if solution_tokens is None:
             loss = None
@@ -87,8 +120,9 @@ class BigramLanguageModel(nn.Module):
     def generate(self, starting_tokens, max_new_token_number):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_token_number):
+            context_tokens = starting_tokens[:, -context_length:]
             # get the predictions
-            logits, loss = self(starting_tokens)
+            logits, loss = self(context_tokens)
             # focus only on the last time step
             logits = logits[:, -1, :] # becomes (B, C)
             # apply softmax to get probabilities
@@ -108,7 +142,7 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 for iter in range(max_iters):
 
     # every once in a while evaluate the loss on train and val sets
-    if iter % eval_interval == 0:
+    if iter % eval_interval == 0 or iter == max_iters - 1:
         losses = estimate_loss()
         print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
