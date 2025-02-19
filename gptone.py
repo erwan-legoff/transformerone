@@ -5,12 +5,13 @@ from torch.nn import functional as F
 # hyperparameters
 batch_size = 256 # how many independent sequences will we process in parallel?
 context_length = 15 # what is the maximum context length for predictions?
-max_iters = 1000000
+max_iters = 10000
 eval_interval = 5000
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 50
 embedding_dimension_count = 32
+head_count = 4
 
 print(torch.cuda.is_available())  # Doit retourner True si CUDA est actif
 print(torch.cuda.device_count())  # Nombre de GPU disponibles
@@ -62,7 +63,7 @@ def estimate_loss():
     model.train()
     return out
 
-class Head(nn.Module):
+class AttentionHead(nn.Module):
     def __init__(self, head_size):
         super().__init__()
         self.key = nn.Linear(embedding_dimension_count, head_size, bias=False)
@@ -82,6 +83,17 @@ class Head(nn.Module):
         weighted_aggregation = probabilistic_causal_attention @ value # (B,T,T) @ (B,T,C) => (B,T,C)
         return weighted_aggregation
 
+class MultiHeadAttention(nn.Module):
+
+    def __init__(self, head_count, head_size):
+        super().__init__()
+        # We create multiple head_attention
+        self.heads = nn.ModuleList([AttentionHead(head_size) for _ in range(head_count)])
+        
+    def forward(self, starting_tokens):
+        # we concatenate the result of multiple heads
+        return torch.cat([head(starting_tokens) for head in self.heads], dim=-1)
+
 
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
@@ -92,7 +104,7 @@ class BigramLanguageModel(nn.Module):
         self.token_embedding_table = nn.Embedding(vocabulary_size, embedding_dimension_count)
         # the position is also embedded
         self.position_embedding_table = nn.Embedding(context_length, embedding_dimension_count)
-        self.self_attention_head = Head(embedding_dimension_count)
+        self.self_attention_heads = MultiHeadAttention(head_count, embedding_dimension_count//head_count)
         # Will convert embeddings to logits
         self.language_modeling_head = nn.Linear(embedding_dimension_count, vocabulary_size)
 
@@ -104,7 +116,7 @@ class BigramLanguageModel(nn.Module):
         position_embeddings = self.position_embedding_table(torch.arange(time_steps, device=device))# (T,C)
         
         spatial_meaning_embedding = token_embeddings + position_embeddings
-        spatial_meaning_embedding = self.self_attention_head(spatial_meaning_embedding)
+        spatial_meaning_embedding = self.self_attention_heads(spatial_meaning_embedding)
         logits = self.language_modeling_head(spatial_meaning_embedding) # (B,T,Cvocab_size)
 
         if solution_tokens is None:
