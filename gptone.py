@@ -6,7 +6,7 @@ from torch.nn import functional as F
 batch_size = 256 # how many independent sequences will we process in parallel?
 context_length = 15 # what is the maximum context length for predictions?
 max_iters = 10000
-eval_interval = 5000
+eval_interval = 1000
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 50
@@ -63,6 +63,33 @@ def estimate_loss():
     model.train()
     return out
 
+class AttentionThinkingBlock(nn.Module):
+    
+    def __init__(self, embedding_dimension_count, head_count):
+        super().__init__()
+        head_size = embedding_dimension_count // head_count
+        # Make the tokens talk to each other
+        self.attention_network = MultiHeadAttention(head_count, head_size)
+        # Make tokens thinks with this new information
+        self.feed_forward_network = FeedForwardNetwork(embedding_dimension_count)
+
+    def forward(self, input_tokens):
+        attended_tokens = self.attention_network(input_tokens)
+        thought_attended_tokens = self.feed_forward_network(attended_tokens)
+        return thought_attended_tokens
+
+
+class FeedForwardNetwork(nn.Module):
+    def __init__(self, embedding_dimension_count):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(embedding_dimension_count, embedding_dimension_count),
+            nn.ReLU(),
+        )
+    
+    def forward(self, input_tokens):
+        return self.network(input_tokens)
+
 class AttentionHead(nn.Module):
     def __init__(self, head_size):
         super().__init__()
@@ -90,9 +117,9 @@ class MultiHeadAttention(nn.Module):
         # We create multiple head_attention
         self.heads = nn.ModuleList([AttentionHead(head_size) for _ in range(head_count)])
         
-    def forward(self, starting_tokens):
+    def forward(self, input_tokens):
         # we concatenate the result of multiple heads
-        return torch.cat([head(starting_tokens) for head in self.heads], dim=-1)
+        return torch.cat([head(input_tokens) for head in self.heads], dim=-1)
 
 
 # super simple bigram model
@@ -104,19 +131,27 @@ class BigramLanguageModel(nn.Module):
         self.token_embedding_table = nn.Embedding(vocabulary_size, embedding_dimension_count)
         # the position is also embedded
         self.position_embedding_table = nn.Embedding(context_length, embedding_dimension_count)
-        self.self_attention_heads = MultiHeadAttention(head_count, embedding_dimension_count//head_count)
+       
+        # Tokens will communicate with each other and think about it multiple times
+        self.attention_thinking_block = nn.Sequential(
+            AttentionThinkingBlock(embedding_dimension_count, head_count),
+            AttentionThinkingBlock(embedding_dimension_count, head_count),
+            AttentionThinkingBlock(embedding_dimension_count, head_count)
+        )
+
         # Will convert embeddings to logits
         self.language_modeling_head = nn.Linear(embedding_dimension_count, vocabulary_size)
 
-    def forward(self, starting_tokens, solution_tokens=None):
-        batch_size, time_steps = starting_tokens.shape
+    def forward(self, input_tokens, solution_tokens=None):
+        batch_size, time_steps = input_tokens.shape
         # idx and targets are both (B,T) tensor of integers
-        token_embeddings = self.token_embedding_table(starting_tokens) # (B,T,C)
+        token_embeddings = self.token_embedding_table(input_tokens) # (B,T,C)
         
         position_embeddings = self.position_embedding_table(torch.arange(time_steps, device=device))# (T,C)
         
         spatial_meaning_embedding = token_embeddings + position_embeddings
-        spatial_meaning_embedding = self.self_attention_heads(spatial_meaning_embedding)
+        spatial_meaning_embedding = self.attention_thinking_block(spatial_meaning_embedding)
+
         logits = self.language_modeling_head(spatial_meaning_embedding) # (B,T,Cvocab_size)
 
         if solution_tokens is None:
@@ -129,10 +164,10 @@ class BigramLanguageModel(nn.Module):
 
         return logits, loss
 
-    def generate(self, starting_tokens, max_new_token_number):
+    def generate(self, input_tokens, max_new_token_number):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_token_number):
-            context_tokens = starting_tokens[:, -context_length:]
+            context_tokens = input_tokens[:, -context_length:]
             # get the predictions
             logits, loss = self(context_tokens)
             # focus only on the last time step
@@ -142,8 +177,8 @@ class BigramLanguageModel(nn.Module):
             # sample from the distribution
             next_token = torch.multinomial(probs, num_samples=1) # (B, 1)
             # append sampled index to the running sequence
-            starting_tokens = torch.cat((starting_tokens, next_token), dim=1) # (B, T+1)
-        return starting_tokens
+            input_tokens = torch.cat((input_tokens, next_token), dim=1) # (B, T+1)
+        return input_tokens
 
 model = BigramLanguageModel()
 initialized_model = model.to(device)
