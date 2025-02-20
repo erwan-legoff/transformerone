@@ -3,15 +3,17 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters
-batch_size = 256 # how many independent sequences will we process in parallel?
-context_length = 30 # what is the maximum context length for predictions?
-max_iters = 30000
-eval_interval = 1000
-learning_rate = 1e-3
+batch_size = 64 # how many independent sequences will we process in parallel?
+context_length = 256 # what is the maximum context length for predictions?
+max_iters = 10000
+eval_interval = 500
+learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters = 50
-embedding_dimension_count = 64
+eval_iters = 100
+embedding_dimension_count = 384
 head_count = 4
+layer_count = 6
+dropout = 0.2
 
 print(torch.cuda.is_available())  # Doit retourner True si CUDA est actif
 print(torch.cuda.device_count())  # Nombre de GPU disponibles
@@ -75,6 +77,8 @@ class AttentionHead(nn.Module):
         self.query = nn.Linear(embedding_dimension_count, head_size, bias=False)
         self.value = nn.Linear(embedding_dimension_count, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
+
+        self.dropout = nn.Dropout(dropout) # It will randomly silence some neuron
     
     def forward(self, current_token_context):
         batch_size,time_step_count,channel_count = current_token_context.shape
@@ -83,10 +87,12 @@ class AttentionHead(nn.Module):
         attention_scores = query @ key.transpose(-2,-1) * channel_count**-0.5 # (B,T,C) @ (B,C,T) -> (B,T,T)
         causal_attention_scores = attention_scores.masked_fill(self.tril[:time_step_count, :time_step_count] == 0, float('-inf')) # (B,T,T)
         probabilistic_causal_attention = F.softmax(causal_attention_scores, dim=1) # (B,T,T)
-
+        probabilistic_causal_attention = self.dropout(probabilistic_causal_attention)
         value = self.value(current_token_context) # (B,T,C)
         weighted_aggregation = probabilistic_causal_attention @ value # (B,T,T) @ (B,T,C) => (B,T,C)
         return weighted_aggregation
+
+
 
 class MultiHeadAttention(nn.Module):
 
@@ -95,12 +101,15 @@ class MultiHeadAttention(nn.Module):
         # We create multiple head_attention
         self.heads = nn.ModuleList([AttentionHead(head_size) for _ in range(head_count)])
         self.projection = nn.Linear(embedding_dimension_count, embedding_dimension_count)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, input_tokens):
         # we concatenate the result of multiple heads
         self_attended_tokens = torch.cat([head(input_tokens) for head in self.heads], dim=-1)
         projection = self.projection(self_attended_tokens) # We remix all head computation
+        projection = self.dropout(projection)
         return projection
+
 
 class FeedForwardNetwork(nn.Module):
     def __init__(self, embedding_dimension_count):
@@ -114,6 +123,8 @@ class FeedForwardNetwork(nn.Module):
     def forward(self, input_tokens):
         return self.network(input_tokens)
     
+
+
 class AttentionThinkingBlock(nn.Module):
     
     def __init__(self, embedding_dimension_count, head_count):
@@ -123,10 +134,16 @@ class AttentionThinkingBlock(nn.Module):
         self.attention_network = MultiHeadAttention(head_count, head_size)
         # Make tokens thinks with this new information
         self.feed_forward_network = FeedForwardNetwork(embedding_dimension_count)
+        # We normalize the layer to avoid too high or low values
+        self.attention_layer_normalization = nn.LayerNorm(embedding_dimension_count)
+        self.feed_forward_layer_normalization = nn.LayerNorm(embedding_dimension_count)
 
     def forward(self, input_tokens):
-        attended_tokens = input_tokens + self.attention_network(input_tokens) # We keep a skip connection to improve the retropagation retention
-        thought_attended_tokens = attended_tokens + self.feed_forward_network(attended_tokens)
+        normalized_input_tokens = self.attention_layer_normalization(input_tokens)
+        # We keep a skip connection to improve the retropagation retention
+        attended_tokens = input_tokens + self.attention_network(normalized_input_tokens) 
+        normalized_attended_tokens = self.feed_forward_layer_normalization(attended_tokens)
+        thought_attended_tokens = attended_tokens + self.feed_forward_network(normalized_attended_tokens)
         return thought_attended_tokens
 
 # super simple bigram model
@@ -140,11 +157,11 @@ class BigramLanguageModel(nn.Module):
         self.position_embedding_table = nn.Embedding(context_length, embedding_dimension_count)
        
         # Tokens will communicate with each other and think about it multiple times
-        self.attention_thinking_block = nn.Sequential(
-            AttentionThinkingBlock(embedding_dimension_count, head_count),
-            AttentionThinkingBlock(embedding_dimension_count, head_count),
-            AttentionThinkingBlock(embedding_dimension_count, head_count)
+        self.attention_thinking_blocks = nn.Sequential(
+            *[AttentionThinkingBlock(embedding_dimension_count, head_count) for _ in range(layer_count)] 
         )
+        
+        self.final_layer_normalization = nn.LayerNorm(embedding_dimension_count)
 
         # Will convert embeddings to logits
         self.language_modeling_head = nn.Linear(embedding_dimension_count, vocabulary_size)
@@ -157,9 +174,9 @@ class BigramLanguageModel(nn.Module):
         position_embeddings = self.position_embedding_table(torch.arange(time_steps, device=device))# (T,C)
         
         spatial_meaning_embedding = token_embeddings + position_embeddings
-        spatial_meaning_embedding = self.attention_thinking_block(spatial_meaning_embedding)
-
-        logits = self.language_modeling_head(spatial_meaning_embedding) # (B,T,Cvocab_size)
+        spatial_meaning_embedding = self.attention_thinking_blocks(spatial_meaning_embedding)
+        normalized_thought_embedding = self.final_layer_normalization(spatial_meaning_embedding)
+        logits = self.language_modeling_head(normalized_thought_embedding) # (B,T,Cvocab_size)
 
         if solution_tokens is None:
             loss = None
