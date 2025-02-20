@@ -94,17 +94,21 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         # We create multiple head_attention
         self.heads = nn.ModuleList([AttentionHead(head_size) for _ in range(head_count)])
-        
+        self.projection = nn.Linear(embedding_dimension_count, embedding_dimension_count)
+
     def forward(self, input_tokens):
         # we concatenate the result of multiple heads
-        return torch.cat([head(input_tokens) for head in self.heads], dim=-1)
+        self_attended_tokens = torch.cat([head(input_tokens) for head in self.heads], dim=-1)
+        projection = self.projection(self_attended_tokens) # We remix all head computation
+        return projection
 
 class FeedForwardNetwork(nn.Module):
     def __init__(self, embedding_dimension_count):
         super().__init__()
         self.network = nn.Sequential(
-            nn.Linear(embedding_dimension_count, embedding_dimension_count),
+            nn.Linear(embedding_dimension_count, 4*embedding_dimension_count),
             nn.ReLU(),
+            nn.Linear(4*embedding_dimension_count, embedding_dimension_count),
         )
     
     def forward(self, input_tokens):
