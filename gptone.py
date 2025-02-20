@@ -4,13 +4,13 @@ from torch.nn import functional as F
 
 # hyperparameters
 batch_size = 256 # how many independent sequences will we process in parallel?
-context_length = 15 # what is the maximum context length for predictions?
-max_iters = 10000
+context_length = 30 # what is the maximum context length for predictions?
+max_iters = 30000
 eval_interval = 1000
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 50
-embedding_dimension_count = 32
+embedding_dimension_count = 64
 head_count = 4
 
 print(torch.cuda.is_available())  # Doit retourner True si CUDA est actif
@@ -63,32 +63,10 @@ def estimate_loss():
     model.train()
     return out
 
-class AttentionThinkingBlock(nn.Module):
-    
-    def __init__(self, embedding_dimension_count, head_count):
-        super().__init__()
-        head_size = embedding_dimension_count // head_count
-        # Make the tokens talk to each other
-        self.attention_network = MultiHeadAttention(head_count, head_size)
-        # Make tokens thinks with this new information
-        self.feed_forward_network = FeedForwardNetwork(embedding_dimension_count)
-
-    def forward(self, input_tokens):
-        attended_tokens = self.attention_network(input_tokens)
-        thought_attended_tokens = self.feed_forward_network(attended_tokens)
-        return thought_attended_tokens
 
 
-class FeedForwardNetwork(nn.Module):
-    def __init__(self, embedding_dimension_count):
-        super().__init__()
-        self.network = nn.Sequential(
-            nn.Linear(embedding_dimension_count, embedding_dimension_count),
-            nn.ReLU(),
-        )
-    
-    def forward(self, input_tokens):
-        return self.network(input_tokens)
+
+
 
 class AttentionHead(nn.Module):
     def __init__(self, head_size):
@@ -121,6 +99,31 @@ class MultiHeadAttention(nn.Module):
         # we concatenate the result of multiple heads
         return torch.cat([head(input_tokens) for head in self.heads], dim=-1)
 
+class FeedForwardNetwork(nn.Module):
+    def __init__(self, embedding_dimension_count):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(embedding_dimension_count, embedding_dimension_count),
+            nn.ReLU(),
+        )
+    
+    def forward(self, input_tokens):
+        return self.network(input_tokens)
+    
+class AttentionThinkingBlock(nn.Module):
+    
+    def __init__(self, embedding_dimension_count, head_count):
+        super().__init__()
+        head_size = embedding_dimension_count // head_count
+        # Make the tokens talk to each other
+        self.attention_network = MultiHeadAttention(head_count, head_size)
+        # Make tokens thinks with this new information
+        self.feed_forward_network = FeedForwardNetwork(embedding_dimension_count)
+
+    def forward(self, input_tokens):
+        attended_tokens = input_tokens + self.attention_network(input_tokens) # We keep a skip connection to improve the retropagation retention
+        thought_attended_tokens = attended_tokens + self.feed_forward_network(attended_tokens)
+        return thought_attended_tokens
 
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
