@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -5,17 +6,17 @@ from torch.nn import functional as F
 # hyperparameters
 batch_size = 64 
 context_length = 256 
-maximum_training_steps = 50000
+maximum_training_steps = 2000
 evaluation_interval = 100
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iteration_count = 20
 # Embedding depth: higher dimensionality captures more nuanced relationships
 embedding_dimension_count = 384
-head_count = 4
+head_count = 8
 layer_count = 6
 dropout = 0.33 # It will randomly silence some neuron (the fraction)
-max_new_token_number = 10000
+max_new_token_number = 1000
 
 if(torch.cuda.is_available()):
     print(f"{torch.cuda.device_count()} GPU DETECTED: {torch.cuda.get_device_name(0)}")
@@ -255,25 +256,56 @@ class GptOne(nn.Module):
 model = GptOne()
 initialized_model = model.to(device)
 
+def save_checkpoint(model, checkpoint_dir="checkpoints", base_name="gptone"):
+    if not os.path.exists(checkpoint_dir):
+        os.makedirs(checkpoint_dir)
+    # Récupère tous les fichiers de checkpoint existants
+    existing = [f for f in os.listdir(checkpoint_dir) if f.startswith(base_name) and f.endswith(".pt")]
+    max_index = 0
+    for fname in existing:
+        try:
+            idx = int(fname.split('_')[-1].split('.')[0])
+            max_index = max(max_index, idx)
+        except Exception:
+            continue
+    new_index = max_index + 1
+    checkpoint_name = f"{base_name}_{new_index}.pt"
+    checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
+    torch.save(model.state_dict(), checkpoint_path)
+    print("Checkpoint sauvegardé :", checkpoint_path)
+
+def load_checkpoint(model, checkpoint_path):
+    state_dict = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(state_dict)
+    print("Checkpoint chargé depuis :", checkpoint_path)
+
+
 # create a PyTorch optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+def train():
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-for step in range(maximum_training_steps):
+    for step in range(maximum_training_steps):
+        if step % evaluation_interval == 0 or step == maximum_training_steps - 1:
+            losses = calculate_mean_losses()
+            print(f"step {step}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+            save_checkpoint(initialized_model)
+    
+        random_input_tokens, solution_tokenS = get_batch('train')
 
     
-    if step % evaluation_interval == 0 or step == maximum_training_steps - 1:
-        losses = calculate_mean_losses()
-        print(f"step {step}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        logits, loss = model(random_input_tokens, solution_tokenS)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
 
-    
-    random_input_tokens, solution_tokenS = get_batch('train')
+#train()
 
-    
-    logits, loss = model(random_input_tokens, solution_tokenS)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+def load_checkpoint(model, checkpoint_path):
+    state_dict = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(state_dict)
+    print("Checkpoint chargé depuis :", checkpoint_path)
 
+load_checkpoint(initialized_model, './checkpoints/gptone_2.pt')
 
 starting_context = torch.zeros((1, 1), dtype=torch.long, device=device)
 print(detokenize(initialized_model.generate(starting_context, max_new_token_number=max_new_token_number)[0].tolist()))
