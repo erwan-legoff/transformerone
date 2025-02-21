@@ -3,102 +3,146 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters
-batch_size = 64 # how many independent sequences will we process in parallel?
-context_length = 256 # what is the maximum context length for predictions?
-max_iters = 10000
-eval_interval = 500
+batch_size = 64 
+context_length = 256 
+maximum_training_steps = 50000
+evaluation_interval = 100
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters = 100
+eval_iteration_count = 20
+# Embedding depth: higher dimensionality captures more nuanced relationships
 embedding_dimension_count = 384
 head_count = 4
 layer_count = 6
-dropout = 0.2
+dropout = 0.33 # It will randomly silence some neuron (the fraction)
+max_new_token_number = 10000
 
-print(torch.cuda.is_available())  # Doit retourner True si CUDA est actif
-print(torch.cuda.device_count())  # Nombre de GPU disponibles
-print(torch.cuda.get_device_name(0))  # Nom du premier GPU détecté
+if(torch.cuda.is_available()):
+    print(f"{torch.cuda.device_count()} GPU DETECTED: {torch.cuda.get_device_name(0)}")
 # ------------
 
-torch.manual_seed(1337)
+torch.manual_seed(1337) # For reproducibility
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 with open('shakespear.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
-# here are all the unique characters that occur in this text
-vocabulary = sorted(list(set(text)))
-vocabulary_size = len(vocabulary)
-# create a mapping from characters to integers
-string_to_int = { char:int for int,char in enumerate(vocabulary) }
-int_to_string = { int:char for int,char in enumerate(vocabulary) }
-tokenize = lambda string: [string_to_int[character] for character in string] # encoder: take a string, output a list of integers
-detokenize = lambda integers: ''.join([int_to_string[integer] for integer in integers]) # decoder: take a list of integers, output a string
 
-# Train and test splits
+vocabulary = sorted(list(set(text))) # The possible tokens for our model, sorted by ascii value
+vocabulary_size = len(vocabulary)
+# we create a dictionnary from string to int
+string_to_int = { char:int for int,char in enumerate(vocabulary) } 
+int_to_string = { int:char for int,char in enumerate(vocabulary) } # we create a dictionnary from int to string
+
+# Each character of the string will be converted to tokens encoded in int
+tokenize = lambda string_to_tokenize: [string_to_int[character] for character in string_to_tokenize] 
+# each token will be converted into char, and it will be concatenated to form a string
+detokenize = lambda tokens_to_stringify: ''.join([int_to_string[integer] for integer in tokens_to_stringify]) 
+
+# we tokenize our dataset
 tokenized_data = torch.tensor(tokenize(text), dtype=torch.long)
-training_data_size = int(0.9*len(tokenized_data)) # first 90% will be train, rest val
+# we train on 90% of the dataset
+training_data_size = int(0.9*len(tokenized_data)) 
 training_data = tokenized_data[:training_data_size]
+# we eval to the remaining 10%
 evaluation_data = tokenized_data[training_data_size:]
 
-# data loading
-def get_batch(split):
-    # generate a small batch of data of inputs x and targets y
-    data = training_data if split == 'train' else evaluation_data
-    random_offsets = torch.randint(len(data) - context_length, (batch_size,))
-    starting_token = torch.stack([data[offset:offset+context_length] for offset in random_offsets])
-    solution_token = torch.stack([data[offset+1:offset+context_length+1] for offset in random_offsets])
-    starting_token, solution_token = starting_token.to(device), solution_token.to(device)
-    return starting_token, solution_token
+# Take 2 random batches in the dataset (input_tokens and solution_tokens)
+def get_batch(data_partition_name):
+    # According to the type partition name, we choose between training or eval
+    data = training_data if data_partition_name == 'train' else evaluation_data
+    # the max of the strating_offset for the batch, we substract 1 to avoir y overflow
+    max_offset = len(data) - context_length-1
+    # we take random offsets from the given dataset (without overflowing the size)
+    random_start_offsets = torch.randint(max_offset, (batch_size,))
+    # for each random start_offset we take a slice of the context length
+    input_tokens = torch.stack([data[offset:offset+context_length] for offset in random_start_offsets])
+    # Same but we offset by 1 to have the solution (next token)
+    solution_tokens = torch.stack([data[offset+1:offset+1+context_length] for offset in random_start_offsets])
+    #We choose the right  device to put the data (gpu/cpu)
+    input_tokens, solution_tokens = input_tokens.to(device), solution_tokens.to(device)
+    return input_tokens, solution_tokens
 
+# We eval the mean loss for the training data and eval data
+# The eval_iteration_count define how many points we take for the data
 @torch.no_grad()
-def estimate_loss():
-    out = {}
+def calculate_mean_losses():
+    mean_losses = {}
     model.eval()
-    for split in ['train', 'val']:
-        losses = torch.zeros(eval_iters)
-        for k in range(eval_iters):
-            X, Y = get_batch(split)
-            logits, loss = model(X, Y)
-            losses[k] = loss.item()
-        out[split] = losses.mean()
+    for data_partition_name in ['train', 'val']:
+        calculate_mean_loss(mean_losses, data_partition_name)
     model.train()
-    return out
+    return mean_losses
+
+# Calculate the mean for one dataset
+def calculate_mean_loss(mean_losses, data_partition_name):
+    losses = torch.zeros(eval_iteration_count)
+    for eval_iteration_number in range(eval_iteration_count):
+        inputs, solutions = get_batch(data_partition_name)
+        logits, loss = model(inputs, solutions)
+        losses[eval_iteration_number] = loss.item()
+    mean_losses[data_partition_name] = losses.mean()
 
 
 
 
 
-
+# This where attention takes place
 class AttentionHead(nn.Module):
     def __init__(self, head_size):
         super().__init__()
-        self.key = nn.Linear(embedding_dimension_count, head_size, bias=False)
-        self.query = nn.Linear(embedding_dimension_count, head_size, bias=False)
-        self.value = nn.Linear(embedding_dimension_count, head_size, bias=False)
+        # We store the keys of each token, it's like a profile or a cv
+        # it will be compared to other token queries
+        self.keys = nn.Linear(embedding_dimension_count, head_size, bias=False)
+
+        # Queries are what the token wants to know about other tokens
+        self.queries = nn.Linear(embedding_dimension_count, head_size, bias=False)
+
+        # Values will be the actual info shared according to the matching between queries and keys
+        self.values = nn.Linear(embedding_dimension_count, head_size, bias=False)
+
+        # This is the context_window_mask, we block info from the futur tokens
         self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
-
-        self.dropout = nn.Dropout(dropout) # It will randomly silence some neuron
+        
+        #  To help share the knowledge between neurons, we randomly silence some neuron
+        self.dropouts = nn.Dropout(dropout)
     
-    def forward(self, current_token_context):
-        batch_size,time_step_count,channel_count = current_token_context.shape
-        key = self.key(current_token_context)
-        query = self.query(current_token_context)
-        attention_scores = query @ key.transpose(-2,-1) * channel_count**-0.5 # (B,T,C) @ (B,C,T) -> (B,T,T)
-        causal_attention_scores = attention_scores.masked_fill(self.tril[:time_step_count, :time_step_count] == 0, float('-inf')) # (B,T,T)
+    def forward(self, current_token_contexts):
+        batch_size,token_count,channel_count = current_token_contexts.shape
+        # compute keys
+        keys = self.keys(current_token_contexts)
+
+        # compute queries
+        queries = self.queries(current_token_contexts)
+
+        # compute attention scores, how much do each care about each other
+        # The formule is : dot_product between keys and values  (we transpose to allow dot product)
+        # We devide by the square root of embedding dimmensions
+        attention_scores = queries @ keys.transpose(-2,-1) * keys.shape[-1]**-0.5 # (B,T,C) @ (B,C,T) -> (B,T,T)
+        
+        # we mask the attention that are before each token
+        causal_attention_scores = attention_scores.masked_fill(self.tril[:token_count, :token_count] == 0, float('-inf')) # (B,T,T)
+        
+        # Now between 0 and 1
         probabilistic_causal_attention = F.softmax(causal_attention_scores, dim=1) # (B,T,T)
-        probabilistic_causal_attention = self.dropout(probabilistic_causal_attention)
-        value = self.value(current_token_context) # (B,T,C)
-        weighted_aggregation = probabilistic_causal_attention @ value # (B,T,T) @ (B,T,C) => (B,T,C)
-        return weighted_aggregation
+        
+        # We randomly silence some neurons
+        probabilistic_causal_attention = self.dropouts(probabilistic_causal_attention)
+
+        # Compute values
+        values = self.values(current_token_contexts) # (B,T,C)
+
+        # We share values pondered by the attention
+        shared_informations = probabilistic_causal_attention @ values # (B,T,T) @ (B,T,C) => (B,T,C)
+        return shared_informations
 
 
-
+# We cumulate several attention heads
 class MultiHeadAttention(nn.Module):
 
     def __init__(self, head_count, head_size):
         super().__init__()
-        # We create multiple head_attention
+
         self.heads = nn.ModuleList([AttentionHead(head_size) for _ in range(head_count)])
         self.projection = nn.Linear(embedding_dimension_count, embedding_dimension_count)
         self.dropout = nn.Dropout(dropout)
@@ -110,7 +154,7 @@ class MultiHeadAttention(nn.Module):
         projection = self.dropout(projection)
         return projection
 
-
+# A network to "think"
 class FeedForwardNetwork(nn.Module):
     def __init__(self, embedding_dimension_count):
         super().__init__()
@@ -118,6 +162,7 @@ class FeedForwardNetwork(nn.Module):
             nn.Linear(embedding_dimension_count, 4*embedding_dimension_count),
             nn.ReLU(),
             nn.Linear(4*embedding_dimension_count, embedding_dimension_count),
+            nn.Dropout(dropout),
         )
     
     def forward(self, input_tokens):
@@ -130,45 +175,48 @@ class AttentionThinkingBlock(nn.Module):
     def __init__(self, embedding_dimension_count, head_count):
         super().__init__()
         head_size = embedding_dimension_count // head_count
-        # Make the tokens talk to each other
+        # We apply attention
         self.attention_network = MultiHeadAttention(head_count, head_size)
-        # Make tokens thinks with this new information
+        # We think about these informations
         self.feed_forward_network = FeedForwardNetwork(embedding_dimension_count)
-        # We normalize the layer to avoid too high or low values
+
         self.attention_layer_normalization = nn.LayerNorm(embedding_dimension_count)
         self.feed_forward_layer_normalization = nn.LayerNorm(embedding_dimension_count)
 
     def forward(self, input_tokens):
+        ## We normalize values before attention
         normalized_input_tokens = self.attention_layer_normalization(input_tokens)
-        # We keep a skip connection to improve the retropagation retention
+        # We apply attention and keep the input to avoid forgetting with back propagation
         attended_tokens = input_tokens + self.attention_network(normalized_input_tokens) 
+        ## We normalize values before "thinking"
         normalized_attended_tokens = self.feed_forward_layer_normalization(attended_tokens)
+        # We think about the attention new info
         thought_attended_tokens = attended_tokens + self.feed_forward_network(normalized_attended_tokens)
         return thought_attended_tokens
 
 # super simple bigram model
-class BigramLanguageModel(nn.Module):
+class GptOne(nn.Module):
 
     def __init__(self):
         super().__init__()
-        # it's the identity of the token
+        # The meaning of the token in vector space
         self.token_embedding_table = nn.Embedding(vocabulary_size, embedding_dimension_count)
-        # the position is also embedded
+        # The info of position in the vector space
         self.position_embedding_table = nn.Embedding(context_length, embedding_dimension_count)
        
-        # Tokens will communicate with each other and think about it multiple times
+        # Attention + thinking
         self.attention_thinking_blocks = nn.Sequential(
             *[AttentionThinkingBlock(embedding_dimension_count, head_count) for _ in range(layer_count)] 
         )
-        
+        # normalization
         self.final_layer_normalization = nn.LayerNorm(embedding_dimension_count)
 
-        # Will convert embeddings to logits
+        
         self.language_modeling_head = nn.Linear(embedding_dimension_count, vocabulary_size)
 
     def forward(self, input_tokens, solution_tokens=None):
         batch_size, time_steps = input_tokens.shape
-        # idx and targets are both (B,T) tensor of integers
+        
         token_embeddings = self.token_embedding_table(input_tokens) # (B,T,C)
         
         position_embeddings = self.position_embedding_table(torch.arange(time_steps, device=device))# (T,C)
@@ -192,40 +240,40 @@ class BigramLanguageModel(nn.Module):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_token_number):
             context_tokens = input_tokens[:, -context_length:]
-            # get the predictions
+            
             logits, loss = self(context_tokens)
-            # focus only on the last time step
+            
             logits = logits[:, -1, :] # becomes (B, C)
-            # apply softmax to get probabilities
+            
             probs = F.softmax(logits, dim=-1) # (B, C)
-            # sample from the distribution
+            
             next_token = torch.multinomial(probs, num_samples=1) # (B, 1)
-            # append sampled index to the running sequence
+            
             input_tokens = torch.cat((input_tokens, next_token), dim=1) # (B, T+1)
         return input_tokens
 
-model = BigramLanguageModel()
+model = GptOne()
 initialized_model = model.to(device)
 
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-for iter in range(max_iters):
+for step in range(maximum_training_steps):
 
-    # every once in a while evaluate the loss on train and val sets
-    if iter % eval_interval == 0 or iter == max_iters - 1:
-        losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    
+    if step % evaluation_interval == 0 or step == maximum_training_steps - 1:
+        losses = calculate_mean_losses()
+        print(f"step {step}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-    # sample a batch of data
-    batched_starting_token, batched_solution_token = get_batch('train')
+    
+    random_input_tokens, solution_tokenS = get_batch('train')
 
-    # evaluate the loss
-    logits, loss = model(batched_starting_token, batched_solution_token)
+    
+    logits, loss = model(random_input_tokens, solution_tokenS)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
 
-# generate from the model
+
 starting_context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(detokenize(initialized_model.generate(starting_context, max_new_token_number=500)[0].tolist()))
+print(detokenize(initialized_model.generate(starting_context, max_new_token_number=max_new_token_number)[0].tolist()))
