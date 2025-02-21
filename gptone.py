@@ -124,7 +124,7 @@ class AttentionHead(nn.Module):
         causal_attention_scores = attention_scores.masked_fill(self.tril[:token_count, :token_count] == 0, float('-inf')) # (B,T,T)
         
         # Now between 0 and 1
-        probabilistic_causal_attention = F.softmax(causal_attention_scores, dim=1) # (B,T,T)
+        probabilistic_causal_attention = F.softmax(causal_attention_scores, dim=-1) # (B,T,T)
         
         # We randomly silence some neurons
         probabilistic_causal_attention = self.dropouts(probabilistic_causal_attention)
@@ -215,11 +215,11 @@ class GptOne(nn.Module):
         self.language_modeling_head = nn.Linear(embedding_dimension_count, vocabulary_size)
 
     def forward(self, input_tokens, solution_tokens=None):
-        batch_size, time_steps = input_tokens.shape
+        batch_size, token_count = input_tokens.shape
         
         token_embeddings = self.token_embedding_table(input_tokens) # (B,T,C)
         
-        position_embeddings = self.position_embedding_table(torch.arange(time_steps, device=device))# (T,C)
+        position_embeddings = self.position_embedding_table(torch.arange(token_count, device=device))# (T,C)
         
         spatial_meaning_embedding = token_embeddings + position_embeddings
         spatial_meaning_embedding = self.attention_thinking_blocks(spatial_meaning_embedding)
@@ -229,9 +229,9 @@ class GptOne(nn.Module):
         if solution_tokens is None:
             loss = None
         else:
-            batch_size, time_steps, channel_size = logits.shape
-            logits = logits.view(batch_size*time_steps, channel_size)
-            solution_tokens = solution_tokens.view(batch_size*time_steps)
+            batch_size, token_count, channel_size = logits.shape
+            logits = logits.view(batch_size*token_count, channel_size)
+            solution_tokens = solution_tokens.view(batch_size*token_count)
             loss = F.cross_entropy(logits, solution_tokens)
 
         return logits, loss
