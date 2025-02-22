@@ -1,52 +1,64 @@
+from datetime import datetime, timedelta
 import os
+import time
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters
 batch_size = 64 
-context_length = 256 
-maximum_training_steps = 2000
-evaluation_interval = 100
-learning_rate = 3e-4
+context_length = 256
+maximum_training_steps = 40000
+evaluation_interval = 500
+learning_rate = 4e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iteration_count = 20
+eval_iteration_count = 30
 # Embedding depth: higher dimensionality captures more nuanced relationships
-embedding_dimension_count = 384
+embedding_dimension_count = 512 
 head_count = 8
-layer_count = 6
-dropout = 0.33 # It will randomly silence some neuron (the fraction)
+layer_count = 12
+dropout = 0.45 # It will randomly silence some neuron (the fraction)
 max_new_token_number = 1000
+max_new_token_number_preview = 200
+model_file_name = "gpt_wiki_two"
+generate_interval = 500
+checkpoint_interval = 2000
+time_estimation_interval = 50
+short_eval_interval = 100
+short_eval_iters = 2
 
 if(torch.cuda.is_available()):
     print(f"{torch.cuda.device_count()} GPU DETECTED: {torch.cuda.get_device_name(0)}")
 # ------------
 
-torch.manual_seed(1337) # For reproducibility
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
-with open('shakespear.txt', 'r', encoding='utf-8') as f:
-    text = f.read()
+with open('wiki.train.tokens', 'r', encoding='utf-8') as f:
+    training_text = f.read()
+
+with open('wiki.test.tokens', 'r', encoding='utf-8') as f:
+    eval_text = f.read()
 
 
-vocabulary = sorted(list(set(text))) # The possible tokens for our model, sorted by ascii value
+vocabulary = sorted(list(set(training_text))) # The possible tokens for our model, sorted by ascii value
 vocabulary_size = len(vocabulary)
 # we create a dictionnary from string to int
 string_to_int = { char:int for int,char in enumerate(vocabulary) } 
 int_to_string = { int:char for int,char in enumerate(vocabulary) } # we create a dictionnary from int to string
 
 # Each character of the string will be converted to tokens encoded in int
-tokenize = lambda string_to_tokenize: [string_to_int[character] for character in string_to_tokenize] 
+tokenize = lambda string_to_tokenize: [string_to_int.get(character, 0) for character in string_to_tokenize] 
 # each token will be converted into char, and it will be concatenated to form a string
 detokenize = lambda tokens_to_stringify: ''.join([int_to_string[integer] for integer in tokens_to_stringify]) 
 
 # we tokenize our dataset
-tokenized_data = torch.tensor(tokenize(text), dtype=torch.long)
+tokenized_training_data = torch.tensor(tokenize(training_text), dtype=torch.long)
+tokenized_evaluation_data = torch.tensor(tokenize(eval_text), dtype=torch.long)
 # we train on 90% of the dataset
-training_data_size = int(0.9*len(tokenized_data)) 
-training_data = tokenized_data[:training_data_size]
+#training_data_size = training_text
+training_data = tokenized_training_data
 # we eval to the remaining 10%
-evaluation_data = tokenized_data[training_data_size:]
+evaluation_data = tokenized_evaluation_data
 
 # Take 2 random batches in the dataset (input_tokens and solution_tokens)
 def get_batch(data_partition_name):
@@ -84,9 +96,22 @@ def calculate_mean_loss(mean_losses, data_partition_name):
         losses[eval_iteration_number] = loss.item()
     mean_losses[data_partition_name] = losses.mean()
 
+@torch.no_grad()
+def calculate_short_mean_losses():
+    mean_losses = {}
+    model.eval()
+    for data_partition_name in ['train', 'val']:
+        calculate_short_mean_loss(mean_losses, data_partition_name)
+    model.train()
+    return mean_losses
 
-
-
+def calculate_short_mean_loss(mean_losses, data_partition_name):
+    losses = torch.zeros(short_eval_iters)
+    for eval_iteration_number in range(short_eval_iters):
+        inputs, solutions = get_batch(data_partition_name)
+        logits, loss = model(inputs, solutions)
+        losses[eval_iteration_number] = loss.item()
+    mean_losses[data_partition_name] = losses.mean()
 
 # This where attention takes place
 class AttentionHead(nn.Module):
@@ -256,20 +281,20 @@ class GptOne(nn.Module):
 model = GptOne()
 initialized_model = model.to(device)
 
-def save_checkpoint(model, checkpoint_dir="checkpoints", base_name="gptone"):
+def save_checkpoint(model, loss, checkpoint_dir="checkpoints", base_name=model_file_name):
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
-    # Récupère tous les fichiers de checkpoint existants
     existing = [f for f in os.listdir(checkpoint_dir) if f.startswith(base_name) and f.endswith(".pt")]
     max_index = 0
     for fname in existing:
         try:
-            idx = int(fname.split('_')[-1].split('.')[0])
+            idx = int(fname.split('_')[-2])
             max_index = max(max_index, idx)
         except Exception:
             continue
     new_index = max_index + 1
-    checkpoint_name = f"{base_name}_{new_index}.pt"
+    loss_int = int(loss * 10000)
+    checkpoint_name = f"{base_name}_{new_index}_loss{loss_int}.pt"
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
     torch.save(model.state_dict(), checkpoint_path)
     print("Checkpoint sauvegardé :", checkpoint_path)
@@ -279,33 +304,84 @@ def load_checkpoint(model, checkpoint_path):
     model.load_state_dict(state_dict)
     print("Checkpoint chargé depuis :", checkpoint_path)
 
+def generate_text(max_new_token_number):
+    starting_context = torch.zeros((1, 1), dtype=torch.long, device=device)
+    generated_tokens = model.generate(starting_context, max_new_token_number=max_new_token_number)
+    generated_text = detokenize(generated_tokens[0].tolist())
+    return generated_text
 
 # create a PyTorch optimizer
 def train():
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-
+    starting_timer = time.time()
+    print('THE MODEL HAS STARTED TRAINING')
+    print(datetime.now())
+    
+    best_val_loss = float('inf')
+    no_improvement_count = 0
+    max_no_improvement = 3
+    
     for step in range(maximum_training_steps):
         if step % evaluation_interval == 0 or step == maximum_training_steps - 1:
+            print(f"Evaluating losses at step {step}...")
             losses = calculate_mean_losses()
             print(f"step {step}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-            save_checkpoint(initialized_model)
-    
-        random_input_tokens, solution_tokenS = get_batch('train')
+            
+            if losses['val'] < best_val_loss:
+                best_val_loss = losses['val']
+                no_improvement_count = 0
+            else:
+                no_improvement_count += 1
+                if no_improvement_count >= max_no_improvement:
+                    print(f"Validation loss did not improve for {max_no_improvement} consecutive evaluations. Stopping training.")
+                    save_checkpoint(initialized_model, losses['val'])
+                    break
+        
+        if step % short_eval_interval == 0:
+            print(f"Performing short evaluation at step {step}...")
+            short_losses = calculate_short_mean_losses()
+            print(f"step {step}: short train loss {short_losses['train']:.4f}, short val loss {short_losses['val']:.4f}")
+        
+        if step % checkpoint_interval == 0 or step == maximum_training_steps - 1:
+            print(f"Saving checkpoint at step {step}...")
+            save_checkpoint(initialized_model, losses['val'])
+        
+        if step % generate_interval == 0 or step == maximum_training_steps - 1:
+            print(f"Generating text at step {step}...")
+            print(generate_text(max_new_token_number_preview))
+        
+        if step % time_estimation_interval == 0 or step == maximum_training_steps - 1:
+            print(f"Estimating remaining time at step {step}...")
+            current_time = time.time()
+            current_training_duration = current_time - starting_timer
+            minutes_by_step = current_training_duration / (step + 1) / 60
+            remaining_steps = maximum_training_steps - step
+            remaining_minutes = remaining_steps * minutes_by_step
+            predicted_end_time = datetime.now() + timedelta(minutes=remaining_minutes)
+            
+            print("="*50)
+            print(f"Step: {step}/{maximum_training_steps}")
+            print(f"Elapsed Time: {current_training_duration/60:.2f} minutes")
+            print(f"Remaining Time: {remaining_minutes:.2f} minutes")
+            print(f"Predicted End Time: {predicted_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print("="*50)
 
+        random_input_tokens, solution_tokenS = get_batch('train')
     
         logits, loss = model(random_input_tokens, solution_tokenS)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
-
-#train()
+    print('Training has finished :)')
+    print(datetime.now())
+# load_checkpoint(initialized_model, './checkpoints/gpt_wiki_7.pt')
+train()
 
 def load_checkpoint(model, checkpoint_path):
     state_dict = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(state_dict)
     print("Checkpoint chargé depuis :", checkpoint_path)
 
-load_checkpoint(initialized_model, './checkpoints/gptone_2.pt')
+# load_checkpoint(initialized_model, './checkpoints/gptone_2.pt')
 
-starting_context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(detokenize(initialized_model.generate(starting_context, max_new_token_number=max_new_token_number)[0].tolist()))
+print(generate_text(max_new_token_number))
