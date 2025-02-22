@@ -8,16 +8,17 @@ from torch.nn import functional as F
 # hyperparameters
 batch_size = 64 
 context_length = 256
-maximum_training_steps = 40000
-evaluation_interval = 250
+maximum_training_steps = 10000
+evaluation_interval = 1000
+eval_iteration_count = 60
 learning_rate = 4e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iteration_count = 50
+
 # Embedding depth: higher dimensionality captures more nuanced relationships
 embedding_dimension_count = 512 
 head_count = 8
 layer_count = 12
-dropout = 0.50 # It will randomly silence some neuron (the fraction)
+dropout = 0.25 # It will randomly silence some neuron (the fraction)
 max_new_token_number = 10000
 max_new_token_number_preview = 125
 model_file_name = "gpt_wiki_three"
@@ -25,7 +26,7 @@ generate_interval = 500
 checkpoint_interval = 2000
 time_estimation_interval = 50
 short_eval_interval = 100
-short_eval_iters = 2
+short_eval_iters = 5
 
 if(torch.cuda.is_available()):
     print(f"{torch.cuda.device_count()} GPU DETECTED: {torch.cuda.get_device_name(0)}")
@@ -310,6 +311,23 @@ def generate_text(max_new_token_number):
     generated_text = detokenize(generated_tokens[0].tolist())
     return generated_text
 
+def perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement):
+    print(f"Evaluating losses at step {step}...")
+    losses = calculate_mean_losses()
+    print(f"step {step}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    print(f"Current min_loss: {best_val_loss:.4f}")
+    
+    if losses['val'] < best_val_loss:
+        best_val_loss = losses['val']
+        no_improvement_count = 0
+    else:
+        no_improvement_count += 1
+        if no_improvement_count >= max_no_improvement:
+            print(f"Validation loss did not improve for {max_no_improvement} consecutive evaluations. Stopping training.")
+            save_checkpoint(initialized_model, losses['val'])
+            return True, best_val_loss, no_improvement_count
+    return False, best_val_loss, no_improvement_count
+
 # create a PyTorch optimizer
 def train():
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -317,34 +335,39 @@ def train():
     print('THE MODEL HAS STARTED TRAINING')
     print(datetime.now())
     
+    global best_val_loss
     best_val_loss = float('inf')
+    best_short_eval_loss = float('inf')
     no_improvement_count = 0
-    max_no_improvement = 5
+    max_no_improvement = 6
+    short_no_improvement_count = 0
+    max_short_no_improvement = 10
     
     for step in range(maximum_training_steps):
         if step % evaluation_interval == 0 or step == maximum_training_steps - 1:
-            print(f"Evaluating losses at step {step}...")
-            losses = calculate_mean_losses()
-            print(f"step {step}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-            
-            if losses['val'] < best_val_loss:
-                best_val_loss = losses['val']
-                no_improvement_count = 0
-            else:
-                no_improvement_count += 1
-                if no_improvement_count >= max_no_improvement:
-                    print(f"Validation loss did not improve for {max_no_improvement} consecutive evaluations. Stopping training.")
-                    save_checkpoint(initialized_model, losses['val'])
-                    break
+            stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement)
+            if stop_training:
+                break
         
         if step % short_eval_interval == 0:
             print(f"Performing short evaluation at step {step}...")
             short_losses = calculate_short_mean_losses()
             print(f"step {step}: short train loss {short_losses['train']:.4f}, short val loss {short_losses['val']:.4f}")
+            print(f"Current min_short_loss: {best_short_eval_loss:.4f}")
+            
+            if short_losses['val'] < best_short_eval_loss:
+                best_short_eval_loss = short_losses['val']
+                short_no_improvement_count = 0
+            else:
+                short_no_improvement_count += 1
+                if short_no_improvement_count >= max_short_no_improvement:
+                    stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement)
+                    if stop_training:
+                        break
         
         if step % checkpoint_interval == 0 or step == maximum_training_steps - 1:
             print(f"Saving checkpoint at step {step}...")
-            save_checkpoint(initialized_model, losses['val'])
+            save_checkpoint(initialized_model, best_val_loss)
         
         if step % generate_interval == 0 or step == maximum_training_steps - 1:
             print(f"Generating text at step {step}...")
@@ -375,8 +398,8 @@ def train():
     print('Training has finished :)')
     print(datetime.now())
 
-load_checkpoint(initialized_model, './checkpoints/gpt_wiki_two_12_loss10499.pt')
-#train()
+load_checkpoint(initialized_model, './checkpoints/gpt_wiki_three_24_loss9869.pt')
+train()
 
 def load_checkpoint(model, checkpoint_path):
     state_dict = torch.load(checkpoint_path, map_location=device)
@@ -386,7 +409,7 @@ def load_checkpoint(model, checkpoint_path):
 # load_checkpoint(initialized_model, './checkpoints/gptone_2.pt')
 def detokenizeTokens(generated_tokens):
     return detokenize(generated_tokens[0].tolist())
-starting_context = torch.tensor([tokenize("Thébaïde obsidional. Par excès de neurasthénie. Parait que c’est qu’un cas triste et solitaire, d’un gars seul et peu dèter’. Parait que c’est qu’un cas triste et solitaire d’un gars étaler parterre. Paraskévidékatriaphobie évolue, syllabes en moins problèmes en plus : triskaidékaphobie, bienvenue ! Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie , bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue ! Triskaidékaphobie, bienvenue ! Palilalie, j’déblatère des tas de truc à en perdre l’ouïe, mes textes ont des faux airs de glossolalie : Charivari, lazzis, l’asile s’annonce, la zizanie s’amorce . Plein d’amis des mots atroces, bâillonnés mais ébahis des thébaïdes en bruit. Tentez cahin-caha la cacophonie chers citoyens car, cuniculiculture sur un bateau ça coule a pique, seul le beaupré sort de l’eau. En bon oppresseur des maux, l’âme hyaline, maline, j’entame des tas de rimes déprimantes, pourtant sur les passants j’imprime des pensées opposées au présent . Débarrassé des panacées j’ai peur de plus avoir assez de temps . ")]).to(device)
+starting_context = torch.tensor([tokenize("En 1998, la coupe du monde a été gagnée par")]).to(device)
 
 def generate_and_print_text(max_new_token_number, tokens_per_print=1):
     print(detokenizeTokens(starting_context), end='', flush=True)
@@ -396,8 +419,6 @@ def generate_and_print_text(max_new_token_number, tokens_per_print=1):
         generated_tokens = model.generate(generated_tokens, tokens_per_print)
         generated_text = detokenizeTokens(generated_tokens)[-1]
         print(generated_text, end='', flush=True)
-
-
 
 generate_and_print_text(max_new_token_number, tokens_per_print=1)
 
