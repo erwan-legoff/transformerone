@@ -9,18 +9,18 @@ from torch.nn import functional as F
 batch_size = 64 
 context_length = 256
 maximum_training_steps = 40000
-evaluation_interval = 500
+evaluation_interval = 250
 learning_rate = 4e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iteration_count = 30
+eval_iteration_count = 50
 # Embedding depth: higher dimensionality captures more nuanced relationships
 embedding_dimension_count = 512 
 head_count = 8
 layer_count = 12
-dropout = 0.45 # It will randomly silence some neuron (the fraction)
-max_new_token_number = 1000
-max_new_token_number_preview = 200
-model_file_name = "gpt_wiki_two"
+dropout = 0.50 # It will randomly silence some neuron (the fraction)
+max_new_token_number = 10000
+max_new_token_number_preview = 125
+model_file_name = "gpt_wiki_three"
 generate_interval = 500
 checkpoint_interval = 2000
 time_estimation_interval = 50
@@ -319,7 +319,7 @@ def train():
     
     best_val_loss = float('inf')
     no_improvement_count = 0
-    max_no_improvement = 3
+    max_no_improvement = 5
     
     for step in range(maximum_training_steps):
         if step % evaluation_interval == 0 or step == maximum_training_steps - 1:
@@ -374,8 +374,9 @@ def train():
         optimizer.step()
     print('Training has finished :)')
     print(datetime.now())
-# load_checkpoint(initialized_model, './checkpoints/gpt_wiki_7.pt')
-train()
+
+load_checkpoint(initialized_model, './checkpoints/gpt_wiki_two_12_loss10499.pt')
+#train()
 
 def load_checkpoint(model, checkpoint_path):
     state_dict = torch.load(checkpoint_path, map_location=device)
@@ -383,5 +384,21 @@ def load_checkpoint(model, checkpoint_path):
     print("Checkpoint chargé depuis :", checkpoint_path)
 
 # load_checkpoint(initialized_model, './checkpoints/gptone_2.pt')
+def detokenizeTokens(generated_tokens):
+    return detokenize(generated_tokens[0].tolist())
+starting_context = torch.tensor([tokenize("Thébaïde obsidional. Par excès de neurasthénie. Parait que c’est qu’un cas triste et solitaire, d’un gars seul et peu dèter’. Parait que c’est qu’un cas triste et solitaire d’un gars étaler parterre. Paraskévidékatriaphobie évolue, syllabes en moins problèmes en plus : triskaidékaphobie, bienvenue ! Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie , bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue !Triskaidékaphobie, bienvenue ! Triskaidékaphobie, bienvenue ! Palilalie, j’déblatère des tas de truc à en perdre l’ouïe, mes textes ont des faux airs de glossolalie : Charivari, lazzis, l’asile s’annonce, la zizanie s’amorce . Plein d’amis des mots atroces, bâillonnés mais ébahis des thébaïdes en bruit. Tentez cahin-caha la cacophonie chers citoyens car, cuniculiculture sur un bateau ça coule a pique, seul le beaupré sort de l’eau. En bon oppresseur des maux, l’âme hyaline, maline, j’entame des tas de rimes déprimantes, pourtant sur les passants j’imprime des pensées opposées au présent . Débarrassé des panacées j’ai peur de plus avoir assez de temps . ")]).to(device)
+
+def generate_and_print_text(max_new_token_number, tokens_per_print=1):
+    print(detokenizeTokens(starting_context), end='', flush=True)
+    generated_tokens = starting_context
+    for _ in range(max_new_token_number // tokens_per_print):
+        
+        generated_tokens = model.generate(generated_tokens, tokens_per_print)
+        generated_text = detokenizeTokens(generated_tokens)[-1]
+        print(generated_text, end='', flush=True)
+
+
+
+generate_and_print_text(max_new_token_number, tokens_per_print=1)
 
 print(generate_text(max_new_token_number))
