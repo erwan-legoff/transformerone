@@ -68,8 +68,12 @@ char_occurences = count_char_occurences(training_text)
 # On enregistre dans un fichier les occurences
 def save_list(occurences, file_name):
     with open(file_name, 'w', encoding='utf-8') as f:
-        for c in occurences:
-            f.write(f"{c}: {occurences[c]}\n")
+        if isinstance(occurences, dict):
+            for c in occurences:
+                f.write(f"{c}: {occurences[c]}\n")
+        elif isinstance(occurences, list):
+            for item in occurences:
+                f.write(f"{item}\n")
 
 save_list(bigram_occurences, 'bigram_occurences.txt')
 save_list(char_occurences, 'char_occurences.txt')
@@ -103,6 +107,8 @@ def tokenize(text):
         # If the token is a bigram, we add 1
         c += len(int_to_string.get(int_token)) - 1
         int_tokens.append(int_token)
+    return int_tokens
+    
 
 
 
@@ -137,9 +143,17 @@ def verify_tokenization(tokenized_data, original_text):
 # Verification step
 error_percentage, sorted_missing_chars = verify_tokenization(tokenized_training_data, training_text)
 print(f"Error Percentage: {error_percentage:.2f}%")
-print("Most Missing Characters:")
-for char, count in sorted_missing_chars:
+print("Most Missing Characters (Top 20):")
+for char, count in sorted_missing_chars[:20]:
     print(f"{char}: {count}")
+
+# Write the first 1000 re-detokenized tokens to a text file
+def write_first_1000_tokens_to_file(tokenized_data, file_name):
+    detokenized_text = detokenize(tokenized_data.tolist()[:1000])
+    with open(file_name, 'w', encoding='utf-8') as f:
+        f.write(detokenized_text)
+
+write_first_1000_tokens_to_file(tokenized_training_data, 'first_1000_tokens.txt')
 
 # Take 2 random batches in the dataset (input_tokens and solution_tokens)
 def get_batch(data_partition_name):
@@ -501,5 +515,3 @@ def generate_and_print_text(max_new_token_number, tokens_per_print=1, starting_c
         print(generated_text, end='', flush=True)
 
 generate_and_print_text(max_new_token_number, tokens_per_print=1)
-
-print(generate_text(max_new_token_number))
