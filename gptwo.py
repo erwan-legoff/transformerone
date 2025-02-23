@@ -79,9 +79,9 @@ save_list(bigram_occurences, 'bigram_occurences.txt')
 save_list(char_occurences, 'char_occurences.txt')
 
 # Now we want to keep the most frequent tokens
-max_bigram_vocabulary_size = 100
+max_bigram_vocabulary_size = 319
 top_bigrams_dict = dict(sorted(bigram_occurences.items(), key=lambda item: item[1], reverse=True)[:max_bigram_vocabulary_size])
-max_char_vocabulary_size = 100
+max_char_vocabulary_size = 117
 top_chars_dict = dict(sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)[:max_char_vocabulary_size])
 
 save_list(top_bigrams_dict, 'top_bigrams.txt')
@@ -101,16 +101,13 @@ int_to_string = { int:string for int,string in enumerate(full_vocabulary) } # we
 # We will start by searching a matching bigram, if not we will search for a char
 def tokenize(text):
     int_tokens = []
-    for c in range(len(text)-1):
-        int_token = string_to_int.get(text[c] + text[c+1],
-                                      string_to_int.get(text[c],0))
-        # If the token is a bigram, we add 1
-        c += len(int_to_string.get(int_token)) - 1
+    c = 0
+    while c < len(text) - 1:
+        int_token = string_to_int.get(text[c] + text[c+1], string_to_int.get(text[c], 0))
+        # If the token is a bigram, we add 2
+        c += len(int_to_string.get(int_token)) 
         int_tokens.append(int_token)
     return int_tokens
-    
-
-
 
 # each token will be converted into char, and it will be concatenated to form a string
 detokenize = lambda int_tokens: ''.join([int_to_string[integer] for integer in int_tokens]) 
