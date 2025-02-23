@@ -17,11 +17,11 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # Embedding depth: higher dimensionality captures more nuanced relationships
 embedding_dimension_count = 512 
 head_count = 8
-layer_count = 12
-dropout = 0.25 # It will randomly silence some neuron (the fraction)
+layer_count = 10
+dropout = 0.40 # It will randomly silence some neuron (the fraction)
 max_new_token_number = 10000
 max_new_token_number_preview = 125
-model_file_name = "gpt_wiki_three"
+model_file_name = "gpt_wiki_bigram_one"
 generate_interval = 500
 checkpoint_interval = 2000
 time_estimation_interval = 50
@@ -413,6 +413,12 @@ def load_checkpoint(model, checkpoint_path):
     model.load_state_dict(state_dict)
     print("Checkpoint chargé depuis :", checkpoint_path)
 
+# load_checkpoint(initialized_model, './checkpoints/gptone_2.pt')
+def detokenizeTokens(generated_tokens):
+    return detokenize(generated_tokens[0].tolist())
+
+
+
 def generate_text(max_new_token_number):
     starting_context = torch.zeros((1, 1), dtype=torch.long, device=device)
     generated_tokens = model.generate(starting_context, max_new_token_number=max_new_token_number)
@@ -436,6 +442,15 @@ def perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_im
             return True, best_val_loss, no_improvement_count
     return False, best_val_loss, no_improvement_count
 
+starting_context = torch.tensor([tokenize("En 1998, la coupe du monde a été gagnée par")]).to(device)
+def generate_and_print_text(max_new_token_number, tokens_per_print=1, starting_context=starting_context):
+    print(detokenizeTokens(starting_context), end='', flush=True)
+    generated_tokens = starting_context
+    for _ in range(max_new_token_number // tokens_per_print):
+        
+        generated_tokens = model.generate(generated_tokens, tokens_per_print)
+        generated_text = detokenizeTokens(generated_tokens)[-1]
+        print(generated_text, end='', flush=True)
 # create a PyTorch optimizer
 def train():
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -507,25 +522,10 @@ def train():
     print(datetime.now())
 
 #load_checkpoint(initialized_model, './checkpoints/gpt_wiki_bigram_one_12_loss17012')
-#train()
+train()
 
-def load_checkpoint(model, checkpoint_path):
-    state_dict = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state_dict)
-    print("Checkpoint chargé depuis :", checkpoint_path)
 
-# load_checkpoint(initialized_model, './checkpoints/gptone_2.pt')
-def detokenizeTokens(generated_tokens):
-    return detokenize(generated_tokens[0].tolist())
-starting_context = torch.tensor([tokenize("En 1998, la coupe du monde a été gagnée par")]).to(device)
 
-def generate_and_print_text(max_new_token_number, tokens_per_print=1, starting_context=starting_context):
-    print(detokenizeTokens(starting_context), end='', flush=True)
-    generated_tokens = starting_context
-    for _ in range(max_new_token_number // tokens_per_print):
-        
-        generated_tokens = model.generate(generated_tokens, tokens_per_print)
-        generated_text = detokenizeTokens(generated_tokens)[-1]
-        print(generated_text, end='', flush=True)
+
 
 generate_and_print_text(max_new_token_number, tokens_per_print=1)
