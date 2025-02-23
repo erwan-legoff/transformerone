@@ -100,13 +100,19 @@ int_to_string = { int:string for int,string in enumerate(full_vocabulary) } # we
 
 # We will start by searching a matching bigram, if not we will search for a char
 def tokenize(text):
+    unknown_token = 0 
     int_tokens = []
     c = 0
-    while c < len(text) - 1:
-        int_token = string_to_int.get(text[c] + text[c+1], string_to_int.get(text[c], 0))
-        # If the token is a bigram, we add 2
-        c += len(int_to_string.get(int_token)) 
-        int_tokens.append(int_token)
+    while c < len(text):
+        # Si possible, essayer de tokeniser un bigramme
+        if c < len(text) - 1 and (text[c] + text[c+1]) in string_to_int:
+            int_tokens.append(string_to_int[text[c] + text[c+1]])
+            c += 2  # On saute deux caractères
+        else:
+            # Sinon, tokeniser un caractère seul
+            token = string_to_int.get(text[c], unknown_token)
+            int_tokens.append(token)
+            c += 1
     return int_tokens
 
 # each token will be converted into char, and it will be concatenated to form a string
@@ -135,6 +141,17 @@ def verify_tokenization(tokenized_data, original_text):
                 missing_chars[b] += 1
 
     sorted_missing_chars = sorted(missing_chars.items(), key=lambda item: item[1], reverse=True)
+
+    # Count and display missing words that are in the vocabulary
+    missing_words_in_vocab = {}
+    for word in full_vocabulary:
+        if word in missing_chars:
+            missing_words_in_vocab[word] = missing_chars[word]
+
+    print("Missing Words in Vocabulary:")
+    for word, count in missing_words_in_vocab.items():
+        print(f"{word}: {count}")
+
     return error_percentage, sorted_missing_chars
 
 # Verification step
