@@ -494,7 +494,9 @@ def train():
         
         if step % generate_interval == 0 or step == maximum_training_steps - 1:
             print(f"Generating text at step {step}...")
-            generate_and_print_text(max_new_token_number_preview, tokens_per_print=1, starting_context="Elon Musk est ")
+            starting_context = torch.tensor(tokenize("Elon Musk est "), dtype=torch.long, device=device).unsqueeze(0)
+
+            generate_and_print_text(max_new_token_number_preview, tokens_per_print=1, starting_context=starting_context)
         
         if step % time_estimation_interval == 0 or step == maximum_training_steps - 1:
             print(f"Estimating remaining time at step {step}...")
