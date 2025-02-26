@@ -6,31 +6,49 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters
-batch_size = 64 
-context_length = 256
-maximum_training_steps = 10000
+batch_size = 32 
+context_length = 364
+maximum_training_steps = 50000
 evaluation_interval = 1000
 eval_iteration_count = 60
-learning_rate = 4e-4
+learning_rate = 4e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Embedding depth: higher dimensionality captures more nuanced relationships
 embedding_dimension_count = 512 
-head_count = 8
-layer_count = 10
-dropout = 0.40 # It will randomly silence some neuron (the fraction)
-max_new_token_number = 10000
+head_count = 12
+layer_count = 12
+dropout = 0.10 # It will randomly silence some neuron (the fraction)
+max_new_token_number = 1000
 max_new_token_number_preview = 125
 model_file_name = "gpt_wiki_bigram_one"
 generate_interval = 500
 checkpoint_interval = 2000
 time_estimation_interval = 50
-short_eval_interval = 100
+short_eval_interval = 150
 short_eval_iters = 5
 
 if(torch.cuda.is_available()):
     print(f"{torch.cuda.device_count()} GPU DETECTED: {torch.cuda.get_device_name(0)}")
 # ------------
+
+import unicodedata
+
+def to_decomposed_unicode(text: str) -> str:
+    """
+    Convertit toutes les séquences Unicode en forme décomposée (NFD).
+    Par exemple, 'é' devient 'e' + '́'.
+    Utile si vous voulez stocker/travailler vos données en forme décomposée.
+    """
+    return unicodedata.normalize('NFD', text)
+
+def to_unified_unicode(text: str) -> str:
+    """
+    Convertit toutes les séquences Unicode en forme unifiée (NFC).
+    Par exemple, 'e' + '́' (NFD) devient 'é' (un seul codepoint).
+    Utile pour l'affichage final.
+    """
+    return unicodedata.normalize('NFC', text)
 
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
@@ -65,18 +83,23 @@ def count_char_occurences(training_text):
 bigram_occurences = count_bigram_occurences(training_text)
 char_occurences = count_char_occurences(training_text)
 
-# On enregistre dans un fichier les occurences
-def save_list(occurences, file_name):
+def save_dict_to_file(data, file_name):
     with open(file_name, 'w', encoding='utf-8') as f:
-        if isinstance(occurences, dict):
-            for c in occurences:
-                f.write(f"{c}: {occurences[c]}\n")
-        elif isinstance(occurences, list):
-            for item in occurences:
-                f.write(f"{item}\n")
+        for key, value in data.items():
+            f.write(f"{key}: {value}\n")
 
-save_list(bigram_occurences, 'bigram_occurences.txt')
-save_list(char_occurences, 'char_occurences.txt')
+def save_list_to_file(data, file_name):
+    with open(file_name, 'w', encoding='utf-8') as f:
+        for item in data:
+            f.write(f"{item}\n")
+
+def save_str_to_file(data, file_name):
+    with open(file_name, 'w', encoding='utf-8') as f:
+        f.write(data)
+
+# On enregistre dans un fichier les occurences
+save_dict_to_file(bigram_occurences, 'bigram_occurences.txt')
+save_dict_to_file(char_occurences, 'char_occurences.txt')
 
 # Now we want to keep the most frequent tokens
 max_bigram_vocabulary_size = 319
@@ -84,13 +107,13 @@ top_bigrams_dict = dict(sorted(bigram_occurences.items(), key=lambda item: item[
 max_char_vocabulary_size = 117
 top_chars_dict = dict(sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)[:max_char_vocabulary_size])
 
-save_list(top_bigrams_dict, 'top_bigrams.txt')
-save_list(top_chars_dict, 'top_chars.txt')
+save_dict_to_file(top_bigrams_dict, 'top_bigrams.txt')
+save_dict_to_file(top_chars_dict, 'top_chars.txt')
 
 full_vocabulary = list(top_bigrams_dict.keys()) + list(top_chars_dict.keys())
 
 # save in file
-save_list(full_vocabulary, 'full_vocabulary.txt')
+save_list_to_file(full_vocabulary, 'full_vocabulary.txt')
 
 
 vocabulary_size = len(full_vocabulary)
@@ -100,6 +123,7 @@ int_to_string = { int:string for int,string in enumerate(full_vocabulary) } # we
 
 # We will start by searching a matching bigram, if not we will search for a char
 def tokenize(text):
+    text = to_decomposed_unicode(text)
     unknown_token = 0 
     int_tokens = []
     c = 0
@@ -116,7 +140,7 @@ def tokenize(text):
     return int_tokens
 
 # each token will be converted into char, and it will be concatenated to form a string
-detokenize = lambda int_tokens: ''.join([int_to_string[integer] for integer in int_tokens]) 
+detokenize = lambda int_tokens: to_unified_unicode(''.join([int_to_string[integer] for integer in int_tokens])) 
 
 # we tokenize our datasets
 tokenized_training_data = torch.tensor(tokenize(training_text), dtype=torch.long)
@@ -127,47 +151,21 @@ training_data = tokenized_training_data
 
 evaluation_data = tokenized_evaluation_data
 
-def verify_tokenization(tokenized_data, original_text):
-    detokenized_text = detokenize(tokenized_data.tolist())
-    error_count = sum(1 for a, b in zip(detokenized_text, original_text) if a != b)
-    error_percentage = (error_count / len(original_text)) * 100
 
-    missing_chars = {}
-    for a, b in zip(detokenized_text, original_text):
-        if a != b:
-            if b not in missing_chars:
-                missing_chars[b] = 1
-            else:
-                missing_chars[b] += 1
 
-    sorted_missing_chars = sorted(missing_chars.items(), key=lambda item: item[1], reverse=True)
-
-    # Count and display missing words that are in the vocabulary
-    missing_words_in_vocab = {}
-    for word in full_vocabulary:
-        if word in missing_chars:
-            missing_words_in_vocab[word] = missing_chars[word]
-
-    print("Missing Words in Vocabulary:")
-    for word, count in missing_words_in_vocab.items():
-        print(f"{word}: {count}")
-
-    return error_percentage, sorted_missing_chars
-
-# Verification step
-error_percentage, sorted_missing_chars = verify_tokenization(tokenized_training_data, training_text)
-print(f"Error Percentage: {error_percentage:.2f}%")
-print("Most Missing Characters (Top 20):")
-for char, count in sorted_missing_chars[:20]:
-    print(f"{char}: {count}")
 
 # Write the first 1000 re-detokenized tokens to a text file
 def write_first_1000_tokens_to_file(tokenized_data, file_name):
     detokenized_text = detokenize(tokenized_data.tolist()[:1000])
-    with open(file_name, 'w', encoding='utf-8') as f:
-        f.write(detokenized_text)
+    save_str_to_file(detokenized_text, file_name)
 
 write_first_1000_tokens_to_file(tokenized_training_data, 'first_1000_tokens.txt')
+
+def write_first_2000_chars_to_file(text, file_name):
+    save_str_to_file(text[:2000], file_name)
+
+# Write the first 2000 characters of the training text to a file
+write_first_2000_chars_to_file(training_text, 'first_2000_chars.txt')
 
 # Take 2 random batches in the dataset (input_tokens and solution_tokens)
 def get_batch(data_partition_name):
@@ -413,7 +411,7 @@ def load_checkpoint(model, checkpoint_path):
     model.load_state_dict(state_dict)
     print("Checkpoint chargé depuis :", checkpoint_path)
 
-# load_checkpoint(initialized_model, './checkpoints/gptone_2.pt')
+
 def detokenizeTokens(generated_tokens):
     return detokenize(generated_tokens[0].tolist())
 
@@ -449,8 +447,71 @@ def generate_and_print_text(max_new_token_number, tokens_per_print=1, starting_c
     for _ in range(max_new_token_number // tokens_per_print):
         
         generated_tokens = model.generate(generated_tokens, tokens_per_print)
-        generated_text = detokenizeTokens(generated_tokens)[-1]
+        generated_text = detokenizeTokens(generated_tokens)[-tokens_per_print]
         print(generated_text, end='', flush=True)
+
+def generate_and_save_text(max_new_token_number, tokens_per_print=1, starting_context=starting_context, file_name='generated_text.txt'):
+    generated_tokens = starting_context
+    generated_text = detokenizeTokens(starting_context)
+    
+    for _ in range(max_new_token_number // tokens_per_print):
+        generated_tokens = model.generate(generated_tokens, tokens_per_print)
+        generated_text += detokenizeTokens(generated_tokens)[-1]
+    
+    save_str_to_file(generated_text, file_name)
+
+def inspect_characters(text):
+    import unicodedata
+    for idx, c in enumerate(text):
+        # Récupère le code Unicode
+        code_point = ord(c)
+        # Nom officiel (ou "UNKNOWN" s'il n'y en a pas)
+        name = unicodedata.name(c, "UNKNOWN")
+        # Affiche l’index, le caractère affichable, le code hexadécimal et le nom
+        print(f"{idx:3d} | {repr(c)} | U+{code_point:04X} | {name}")
+
+def generate_print_and_save_text(max_new_token_number,
+                                 tokens_per_print=1,
+                                 starting_context=starting_context,
+                                 file_name='generated_text.txt'):
+
+    generated_tokens = starting_context.clone()
+    # On détokénise la portion de départ
+    initial_text = detokenizeTokens(generated_tokens)
+    print(initial_text, end='', flush=True)
+
+    # On maintient un texte cumulatif pour l'enregistrement final
+    all_text = initial_text
+    
+    # On boucle pour générer `max_new_token_number` tokens, 
+    # par paquets de `tokens_per_print`.
+    steps = max_new_token_number // tokens_per_print
+    for _ in range(steps):
+        # Génére `tokens_per_print` tokens de plus
+        generated_tokens = model.generate(generated_tokens, tokens_per_print)
+
+        # Détokénise la séquence complète
+        detok_full = detokenizeTokens(generated_tokens)
+
+        # Extraire la *tranche finale* correspondant aux nouveaux tokens générés
+        # Si chaque token (modèle bigram) est 1 "caractère" dans la detokenization, 
+        # on peut prendre '[-tokens_per_print:]'.
+        new_part = detok_full[-tokens_per_print:]
+
+        # Afficher cette portion nouvellement générée
+        print(new_part, end='', flush=True)
+
+        # L'ajouter au texte cumulatif
+        all_text += new_part
+
+    # Enfin, sauvegarde du texte complet
+    inspect_characters(all_text)
+    time.sleep(10)
+    save_str_to_file(all_text, file_name)
+    print(f"\nTexte intégral sauvegardé dans '{file_name}'.")
+
+
+
 # create a PyTorch optimizer
 def train():
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -523,11 +584,12 @@ def train():
     print('Training has finished :)')
     print(datetime.now())
 
-#load_checkpoint(initialized_model, './checkpoints/gpt_wiki_bigram_one_12_loss17012')
-train()
+load_checkpoint(initialized_model, './checkpoints/gpt_wiki_bigram_one_20_loss17564.pt')
+#train()
 
 
 
 
 
-generate_and_print_text(max_new_token_number, tokens_per_print=1)
+# generate_and_print_text(max_new_token_number, tokens_per_print=1)
+generate_print_and_save_text(max_new_token_number, tokens_per_print=1)
