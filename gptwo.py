@@ -15,7 +15,7 @@ learning_rate = 4e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Embedding depth: higher dimensionality captures more nuanced relationships
-embedding_dimension_count = 512 
+embedding_dimension_count = 576 
 head_count = 12
 layer_count = 12
 dropout = 0.10 # It will randomly silence some neuron (the fraction)
@@ -102,9 +102,9 @@ save_dict_to_file(bigram_occurences, 'bigram_occurences.txt')
 save_dict_to_file(char_occurences, 'char_occurences.txt')
 
 # Now we want to keep the most frequent tokens
-max_bigram_vocabulary_size = 319
+max_bigram_vocabulary_size = 1000
 top_bigrams_dict = dict(sorted(bigram_occurences.items(), key=lambda item: item[1], reverse=True)[:max_bigram_vocabulary_size])
-max_char_vocabulary_size = 117
+max_char_vocabulary_size = 200
 top_chars_dict = dict(sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)[:max_char_vocabulary_size])
 
 save_dict_to_file(top_bigrams_dict, 'top_bigrams.txt')
@@ -429,16 +429,16 @@ def perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_im
     print(f"step {step}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
     print(f"Current min_loss: {best_val_loss:.4f}")
     
-    if losses['val'] < best_val_loss:
-        best_val_loss = losses['val']
-        no_improvement_count = 0
-    else:
-        no_improvement_count += 1
-        if no_improvement_count >= max_no_improvement:
-            print(f"Validation loss did not improve for {max_no_improvement} consecutive evaluations. Stopping training.")
-            save_checkpoint(initialized_model, losses['val'])
-            return True, best_val_loss, no_improvement_count
-    return False, best_val_loss, no_improvement_count
+    # if losses['val'] < best_val_loss:
+    #     best_val_loss = losses['val']
+    #     no_improvement_count = 0
+    # else:
+    #     no_improvement_count += 1
+    #     if no_improvement_count >= max_no_improvement:
+    #         print(f"Validation loss did not improve for {max_no_improvement} consecutive evaluations. Stopping training.")
+    #         save_checkpoint(initialized_model, losses['val'])
+    #         return True, best_val_loss, no_improvement_count
+    # return False, best_val_loss, no_improvement_count
 
 starting_context = torch.tensor([tokenize("En 1998, la coupe du monde a été gagnée par")]).to(device)
 def generate_and_print_text(max_new_token_number, tokens_per_print=1, starting_context=starting_context):
@@ -505,7 +505,7 @@ def generate_print_and_save_text(max_new_token_number,
         all_text += new_part
 
     # Enfin, sauvegarde du texte complet
-    inspect_characters(all_text)
+    # inspect_characters(all_text)
     time.sleep(10)
     save_str_to_file(all_text, file_name)
     print(f"\nTexte intégral sauvegardé dans '{file_name}'.")
@@ -523,9 +523,9 @@ def train():
     best_val_loss = float('inf')
     best_short_eval_loss = float('inf')
     no_improvement_count = 0
-    max_no_improvement = 6
+    max_no_improvement = 20
     short_no_improvement_count = 0
-    max_short_no_improvement = 10
+    max_short_no_improvement = 20
     
     for step in range(maximum_training_steps):
         if step % evaluation_interval == 0 or step == maximum_training_steps - 1:
@@ -539,15 +539,15 @@ def train():
             print(f"step {step}: short train loss {short_losses['train']:.4f}, short val loss {short_losses['val']:.4f}")
             print(f"Current min_short_loss: {best_short_eval_loss:.4f}")
             
-            if short_losses['val'] < best_short_eval_loss:
-                best_short_eval_loss = short_losses['val']
-                short_no_improvement_count = 0
-            else:
-                short_no_improvement_count += 1
-                if short_no_improvement_count >= max_short_no_improvement:
-                    stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement)
-                    if stop_training:
-                        break
+            # if short_losses['val'] < best_short_eval_loss:
+            #     best_short_eval_loss = short_losses['val']
+            #     short_no_improvement_count = 0
+            # else:
+            #     short_no_improvement_count += 1
+            #     if short_no_improvement_count >= max_short_no_improvement:
+            #         stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement)
+            #         if stop_training:
+            #             break
         
         if step % checkpoint_interval == 0 or step == maximum_training_steps - 1:
             print(f"Saving checkpoint at step {step}...")
@@ -584,8 +584,8 @@ def train():
     print('Training has finished :)')
     print(datetime.now())
 
-load_checkpoint(initialized_model, './checkpoints/gpt_wiki_bigram_one_20_loss17564.pt')
-#train()
+load_checkpoint(initialized_model, './checkpoints/gpt_wiki_bigram_one_27_loss46760.pt')
+train()
 
 
 
