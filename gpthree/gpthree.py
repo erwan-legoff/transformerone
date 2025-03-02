@@ -4,393 +4,225 @@ import time
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-# hyperparameters
-batch_size = 32 
-context_length = 364
-maximum_training_steps = 50000
-learning_rate = 4e-3
-head_count = 12
-layer_count = 12
-dropout = 0.10 # It will randomly silence some neuron (the fraction)
-
-# Embedding depth: higher dimensionality captures more nuanced relationships
-embedding_dimension_count = 576 
-
-evaluation_interval = 2000
-eval_iteration_count = 60
-short_eval_interval = 150
-short_eval_iters = 5
-max_new_token_number = 100
-max_new_token_number_preview = 100
-model_file_name = "gpt_wiki_bigram_two"
-generate_interval = 250
-checkpoint_interval = 5000
-time_estimation_interval = 50
-
-
-if(torch.cuda.is_available()):
-    print(f"{torch.cuda.device_count()} GPU DETECTED: {torch.cuda.get_device_name(0)}")
-# ------------
-
+from FileUtils import *  # On suppose que ce module reste inchangé
 import unicodedata
 
+# --- Fonctions de normalisation Unicode ---
 def to_decomposed_unicode(text: str) -> str:
-    """
-    Convertit toutes les séquences Unicode en forme décomposée (NFD).
-    Par exemple, 'é' devient 'e' + '́'.
-    Utile si vous voulez stocker/travailler vos données en forme décomposée.
-    """
     return unicodedata.normalize('NFD', text)
 
 def to_unified_unicode(text: str) -> str:
-    """
-    Convertit toutes les séquences Unicode en forme unifiée (NFC).
-    Par exemple, 'e' + '́' (NFD) devient 'é' (un seul codepoint).
-    Utile pour l'affichage final.
-    """
     return unicodedata.normalize('NFC', text)
 
-
-# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
-with open('wiki.train.tokens', 'r', encoding='utf-8') as f:
-    training_text = f.read()
-
-with open('wiki.test.tokens', 'r', encoding='utf-8') as f:
-    eval_text = f.read()
-
-
-chars = sorted(list(set(training_text))) # The possible tokens for our model, sorted by ascii value
-# We want to have the possible characters in the training data and their count
-def count_bigram_occurences(training_text):
-    bigram_occurences = {}
-    for c in range(len(training_text)-1):
-        bigram = training_text[c]+training_text[c+1]
-        if bigram not in bigram_occurences:
-            bigram_occurences[bigram] = 1
-        else:
-            bigram_occurences[bigram] +=1
-    return bigram_occurences
-
-def count_char_occurences(training_text):
-    char_occurences = {}
-    for c in training_text:
-        if c not in char_occurences:
-            char_occurences[c] = 1
-        else:
-            char_occurences[c] +=1
-    return char_occurences
-
-bigram_occurences = count_bigram_occurences(training_text)
-char_occurences = count_char_occurences(training_text)
-
-def save_dict_to_file(data, file_name):
-    with open(file_name, 'w', encoding='utf-8') as f:
-        for key, value in data.items():
-            f.write(f"{key}: {value}\n")
-
-def save_list_to_file(data, file_name):
-    with open(file_name, 'w', encoding='utf-8') as f:
-        for item in data:
-            f.write(f"{item}\n")
-
-def save_str_to_file(data, file_name):
-    with open(file_name, 'w', encoding='utf-8') as f:
-        f.write(data)
-
-# On enregistre dans un fichier les occurences
-save_dict_to_file(bigram_occurences, 'bigram_occurences.txt')
-save_dict_to_file(char_occurences, 'char_occurences.txt')
-
-# Now we want to keep the most frequent tokens
-max_bigram_vocabulary_size = 1000
-top_bigrams_dict = dict(sorted(bigram_occurences.items(), key=lambda item: item[1], reverse=True)[:max_bigram_vocabulary_size])
-max_char_vocabulary_size = 200
-top_chars_dict = dict(sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)[:max_char_vocabulary_size])
-
-save_dict_to_file(top_bigrams_dict, 'top_bigrams.txt')
-save_dict_to_file(top_chars_dict, 'top_chars.txt')
-
-full_vocabulary = list(top_bigrams_dict.keys()) + list(top_chars_dict.keys())
-
-# save in file
-save_list_to_file(full_vocabulary, 'full_vocabulary.txt')
-
-
-vocabulary_size = len(full_vocabulary)
-# we create a dictionnary from string to int
-string_to_int = { string:int for int,string in enumerate(full_vocabulary) } 
-int_to_string = { int:string for int,string in enumerate(full_vocabulary) } # we create a dictionnary from int to string
-
-# We will start by searching a matching bigram, if not we will search for a char
-def tokenize(text):
+# --- Fonctions de tokenisation/détokénisation ---
+def tokenize(text, string_to_int):
     text = to_decomposed_unicode(text)
     unknown_token = 0 
     int_tokens = []
     c = 0
     while c < len(text):
-        # Si possible, essayer de tokeniser un bigramme
         if c < len(text) - 1 and (text[c] + text[c+1]) in string_to_int:
             int_tokens.append(string_to_int[text[c] + text[c+1]])
-            c += 2  # On saute deux caractères
+            c += 2
         else:
-            # Sinon, tokeniser un caractère seul
             token = string_to_int.get(text[c], unknown_token)
             int_tokens.append(token)
             c += 1
     return int_tokens
 
-# each token will be converted into char, and it will be concatenated to form a string
-detokenize = lambda int_tokens: to_unified_unicode(''.join([int_to_string[integer] for integer in int_tokens])) 
+def detokenize(int_tokens, int_to_string):
+    return to_unified_unicode(''.join([int_to_string[i] for i in int_tokens]))
 
-# we tokenize our datasets
-tokenized_training_data = torch.tensor(tokenize(training_text), dtype=torch.long)
-tokenized_evaluation_data = torch.tensor(tokenize(eval_text), dtype=torch.long)
+# --- Chargement des données ---
+def load_data(training_file, evaluation_file):
+    with open(training_file, 'r', encoding='utf-8') as f:
+        training_text = f.read()
+    with open(evaluation_file, 'r', encoding='utf-8') as f:
+        eval_text = f.read()
+    return training_text, eval_text
 
+# --- Comptage des occurences ---
+def count_bigram_occurences(training_text):
+    bigram_occurences = {}
+    for c in range(len(training_text)-1):
+        bigram = training_text[c] + training_text[c+1]
+        bigram_occurences[bigram] = bigram_occurences.get(bigram, 0) + 1
+    return bigram_occurences
 
-training_data = tokenized_training_data
+def count_char_occurences(training_text):
+    char_occurences = {}
+    for c in training_text:
+        char_occurences[c] = char_occurences.get(c, 0) + 1
+    return char_occurences
 
-evaluation_data = tokenized_evaluation_data
+# --- Création des vocabulaires ---
+def create_vocabularies(training_text, max_bigram_vocabulary_size=1000, max_char_vocabulary_size=200):
+    bigram_occurences = count_bigram_occurences(training_text)
+    char_occurences = count_char_occurences(training_text)
+    save_dict_to_file(bigram_occurences, 'bigram_occurences.txt')
+    save_dict_to_file(char_occurences, 'char_occurences.txt')
 
+    top_bigrams_dict = dict(sorted(bigram_occurences.items(), key=lambda item: item[1], reverse=True)[:max_bigram_vocabulary_size])
+    top_chars_dict = dict(sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)[:max_char_vocabulary_size])
+    save_dict_to_file(top_bigrams_dict, 'top_bigrams.txt')
+    save_dict_to_file(top_chars_dict, 'top_chars.txt')
 
+    full_vocabulary = list(top_bigrams_dict.keys()) + list(top_chars_dict.keys())
+    save_list_to_file(full_vocabulary, 'full_vocabulary.txt')
+    vocabulary_size = len(full_vocabulary)
+    string_to_int = { string: idx for idx, string in enumerate(full_vocabulary) } 
+    int_to_string = { idx: string for idx, string in enumerate(full_vocabulary) }
+    return vocabulary_size, string_to_int, int_to_string
 
+# --- Préparation des tenseurs de données ---
+def prepare_tokenized_data(training_text, eval_text, tokenize_func, string_to_int):
+    tokenized_training_data = torch.tensor(tokenize_func(training_text, string_to_int), dtype=torch.long)
+    tokenized_evaluation_data = torch.tensor(tokenize_func(eval_text, string_to_int), dtype=torch.long)
+    return tokenized_training_data, tokenized_evaluation_data
 
-# Write the first 1000 re-detokenized tokens to a text file
-def write_first_1000_tokens_to_file(tokenized_data, file_name):
-    detokenized_text = detokenize(tokenized_data.tolist()[:1000])
-    save_str_to_file(detokenized_text, file_name)
-
-write_first_1000_tokens_to_file(tokenized_training_data, 'first_1000_tokens.txt')
-
-def write_first_2000_chars_to_file(text, file_name):
-    save_str_to_file(text[:2000], file_name)
-
-# Write the first 2000 characters of the training text to a file
-write_first_2000_chars_to_file(training_text, 'first_2000_chars.txt')
-
-# Take 2 random batches in the dataset (input_tokens and solution_tokens)
-def get_batch(data_partition_name):
-    # According to the type partition name, we choose between training or eval
+# --- Extraction de sous-batch ---
+def get_batch(data_partition_name, training_data, evaluation_data, context_length, batch_size, device):
     data = training_data if data_partition_name == 'train' else evaluation_data
-    # the max of the strating_offset for the batch, we substract 1 to avoir y overflow
-    max_offset = len(data) - context_length-1
-    # we take random offsets from the given dataset (without overflowing the size)
+    max_offset = len(data) - context_length - 1
     random_start_offsets = torch.randint(max_offset, (batch_size,))
-    # for each random start_offset we take a slice of the context length
     input_tokens = torch.stack([data[offset:offset+context_length] for offset in random_start_offsets])
-    # Same but we offset by 1 to have the solution (next token)
     solution_tokens = torch.stack([data[offset+1:offset+1+context_length] for offset in random_start_offsets])
-    #We choose the right  device to put the data (gpu/cpu)
-    input_tokens, solution_tokens = input_tokens.to(device), solution_tokens.to(device)
-    return input_tokens, solution_tokens
+    return input_tokens.to(device), solution_tokens.to(device)
 
-# We eval the mean loss for the training data and eval data
-# The eval_iteration_count define how many points we take for the data
+# --- Fonctions d'évaluation des pertes ---
 @torch.no_grad()
-def calculate_mean_losses():
+def calculate_mean_losses(model, training_data, evaluation_data, context_length, batch_size, eval_iteration_count, device, get_batch_func):
     mean_losses = {}
     model.eval()
     for data_partition_name in ['train', 'val']:
-        calculate_mean_loss(mean_losses, data_partition_name)
+        losses = torch.zeros(eval_iteration_count)
+        for eval_iteration_number in range(eval_iteration_count):
+            inputs, solutions = get_batch_func(data_partition_name, training_data, evaluation_data, context_length, batch_size, device)
+            _, loss = model(inputs, solutions)
+            losses[eval_iteration_number] = loss.item()
+        mean_losses[data_partition_name] = losses.mean()
     model.train()
     return mean_losses
 
-# Calculate the mean for one dataset
-def calculate_mean_loss(mean_losses, data_partition_name):
-    losses = torch.zeros(eval_iteration_count)
-    for eval_iteration_number in range(eval_iteration_count):
-        inputs, solutions = get_batch(data_partition_name)
-        logits, loss = model(inputs, solutions)
-        losses[eval_iteration_number] = loss.item()
-    mean_losses[data_partition_name] = losses.mean()
-
 @torch.no_grad()
-def calculate_short_mean_losses():
+def calculate_short_mean_losses(model, training_data, evaluation_data, context_length, batch_size, short_eval_iters, device, get_batch_func):
     mean_losses = {}
     model.eval()
     for data_partition_name in ['train', 'val']:
-        calculate_short_mean_loss(mean_losses, data_partition_name)
+        losses = torch.zeros(short_eval_iters)
+        for eval_iteration_number in range(short_eval_iters):
+            inputs, solutions = get_batch_func(data_partition_name, training_data, evaluation_data, context_length, batch_size, device)
+            _, loss = model(inputs, solutions)
+            losses[eval_iteration_number] = loss.item()
+        mean_losses[data_partition_name] = losses.mean()
     model.train()
     return mean_losses
 
-def calculate_short_mean_loss(mean_losses, data_partition_name):
-    losses = torch.zeros(short_eval_iters)
-    for eval_iteration_number in range(short_eval_iters):
-        inputs, solutions = get_batch(data_partition_name)
-        logits, loss = model(inputs, solutions)
-        losses[eval_iteration_number] = loss.item()
-    mean_losses[data_partition_name] = losses.mean()
-
-# This where attention takes place
+# --- Classes du modèle ---
 class AttentionHead(nn.Module):
-    def __init__(self, head_size):
+    def __init__(self, head_size, embedding_dimension_count, context_length, dropout):
         super().__init__()
-        # We store the keys of each token, it's like a profile or a cv
-        # it will be compared to other token queries
         self.keys = nn.Linear(embedding_dimension_count, head_size, bias=False)
-
-        # Queries are what the token wants to know about other tokens
         self.queries = nn.Linear(embedding_dimension_count, head_size, bias=False)
-
-        # Values will be the actual info shared according to the matching between queries and keys
         self.values = nn.Linear(embedding_dimension_count, head_size, bias=False)
-
-        # This is the context_window_mask, we block info from the futur tokens
         self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
-        
-        #  To help share the knowledge between neurons, we randomly silence some neuron
         self.dropouts = nn.Dropout(dropout)
     
     def forward(self, current_token_contexts):
-        batch_size,token_count,channel_count = current_token_contexts.shape
-        # compute keys
+        batch_size, token_count, channel_count = current_token_contexts.shape
         keys = self.keys(current_token_contexts)
-
-        # compute queries
         queries = self.queries(current_token_contexts)
-
-        # compute attention scores, how much do each care about each other
-        # The formule is : dot_product between keys and values  (we transpose to allow dot product)
-        # We devide by the square root of embedding dimmensions
-        attention_scores = queries @ keys.transpose(-2,-1) * keys.shape[-1]**-0.5 # (B,T,C) @ (B,C,T) -> (B,T,T)
-        
-        # we mask the attention that are before each token
-        causal_attention_scores = attention_scores.masked_fill(self.tril[:token_count, :token_count] == 0, float('-inf')) # (B,T,T)
-        
-        # Now between 0 and 1
-        probabilistic_causal_attention = F.softmax(causal_attention_scores, dim=-1) # (B,T,T)
-        
-        # We randomly silence some neurons
+        attention_scores = queries @ keys.transpose(-2, -1) * keys.shape[-1] ** -0.5
+        causal_attention_scores = attention_scores.masked_fill(self.tril[:token_count, :token_count] == 0, float('-inf'))
+        probabilistic_causal_attention = F.softmax(causal_attention_scores, dim=-1)
         probabilistic_causal_attention = self.dropouts(probabilistic_causal_attention)
-
-        # Compute values
-        values = self.values(current_token_contexts) # (B,T,C)
-
-        # We share values pondered by the attention
-        shared_informations = probabilistic_causal_attention @ values # (B,T,T) @ (B,T,C) => (B,T,C)
+        values = self.values(current_token_contexts)
+        shared_informations = probabilistic_causal_attention @ values
         return shared_informations
 
-
-# We cumulate several attention heads
 class MultiHeadAttention(nn.Module):
-
-    def __init__(self, head_count, head_size):
+    def __init__(self, head_count, head_size, embedding_dimension_count, context_length, dropout):
         super().__init__()
-
-        self.heads = nn.ModuleList([AttentionHead(head_size) for _ in range(head_count)])
+        self.heads = nn.ModuleList([AttentionHead(head_size, embedding_dimension_count, context_length, dropout) for _ in range(head_count)])
         self.projection = nn.Linear(embedding_dimension_count, embedding_dimension_count)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, input_tokens):
-        # we concatenate the result of multiple heads
         self_attended_tokens = torch.cat([head(input_tokens) for head in self.heads], dim=-1)
-        projection = self.projection(self_attended_tokens) # We remix all head computation
+        projection = self.projection(self_attended_tokens)
         projection = self.dropout(projection)
         return projection
 
-# A network to "think"
 class FeedForwardNetwork(nn.Module):
-    def __init__(self, embedding_dimension_count):
+    def __init__(self, embedding_dimension_count, dropout):
         super().__init__()
         self.network = nn.Sequential(
-            nn.Linear(embedding_dimension_count, 4*embedding_dimension_count),
+            nn.Linear(embedding_dimension_count, 4 * embedding_dimension_count),
             nn.ReLU(),
-            nn.Linear(4*embedding_dimension_count, embedding_dimension_count),
+            nn.Linear(4 * embedding_dimension_count, embedding_dimension_count),
             nn.Dropout(dropout),
         )
     
     def forward(self, input_tokens):
         return self.network(input_tokens)
-    
-
 
 class AttentionThinkingBlock(nn.Module):
-    
-    def __init__(self, embedding_dimension_count, head_count):
+    def __init__(self, embedding_dimension_count, head_count, context_length, dropout):
         super().__init__()
         head_size = embedding_dimension_count // head_count
-        # We apply attention
-        self.attention_network = MultiHeadAttention(head_count, head_size)
-        # We think about these informations
-        self.feed_forward_network = FeedForwardNetwork(embedding_dimension_count)
-
+        self.attention_network = MultiHeadAttention(head_count, head_size, embedding_dimension_count, context_length, dropout)
+        self.feed_forward_network = FeedForwardNetwork(embedding_dimension_count, dropout)
         self.attention_layer_normalization = nn.LayerNorm(embedding_dimension_count)
         self.feed_forward_layer_normalization = nn.LayerNorm(embedding_dimension_count)
 
     def forward(self, input_tokens):
-        ## We normalize values before attention
         normalized_input_tokens = self.attention_layer_normalization(input_tokens)
-        # We apply attention and keep the input to avoid forgetting with back propagation
-        attended_tokens = input_tokens + self.attention_network(normalized_input_tokens) 
-        ## We normalize values before "thinking"
+        attended_tokens = input_tokens + self.attention_network(normalized_input_tokens)
         normalized_attended_tokens = self.feed_forward_layer_normalization(attended_tokens)
-        # We think about the attention new info
         thought_attended_tokens = attended_tokens + self.feed_forward_network(normalized_attended_tokens)
         return thought_attended_tokens
 
-# super simple bigram model
 class GptOne(nn.Module):
-
-    def __init__(self):
+    def __init__(self, vocabulary_size, embedding_dimension_count, context_length, dropout, head_count, layer_count, device):
         super().__init__()
-        # The meaning of the token in vector space
+        self.device = device
         self.token_embedding_table = nn.Embedding(vocabulary_size, embedding_dimension_count)
-        # The info of position in the vector space
         self.position_embedding_table = nn.Embedding(context_length, embedding_dimension_count)
-       
-        # Attention + thinking
         self.attention_thinking_blocks = nn.Sequential(
-            *[AttentionThinkingBlock(embedding_dimension_count, head_count) for _ in range(layer_count)] 
+            *[AttentionThinkingBlock(embedding_dimension_count, head_count, context_length, dropout) for _ in range(layer_count)]
         )
-        # normalization
         self.final_layer_normalization = nn.LayerNorm(embedding_dimension_count)
-
-        
         self.language_modeling_head = nn.Linear(embedding_dimension_count, vocabulary_size)
 
     def forward(self, input_tokens, solution_tokens=None):
         batch_size, token_count = input_tokens.shape
-        
-        token_embeddings = self.token_embedding_table(input_tokens) # (B,T,C)
-        
-        position_embeddings = self.position_embedding_table(torch.arange(token_count, device=device))# (T,C)
-        
+        token_embeddings = self.token_embedding_table(input_tokens)
+        position_embeddings = self.position_embedding_table(torch.arange(token_count, device=self.device))
         spatial_meaning_embedding = token_embeddings + position_embeddings
         spatial_meaning_embedding = self.attention_thinking_blocks(spatial_meaning_embedding)
         normalized_thought_embedding = self.final_layer_normalization(spatial_meaning_embedding)
-        logits = self.language_modeling_head(normalized_thought_embedding) # (B,T,Cvocab_size)
-
+        logits = self.language_modeling_head(normalized_thought_embedding)
         if solution_tokens is None:
             loss = None
         else:
             batch_size, token_count, channel_size = logits.shape
-            logits = logits.view(batch_size*token_count, channel_size)
-            solution_tokens = solution_tokens.view(batch_size*token_count)
+            logits = logits.view(batch_size * token_count, channel_size)
+            solution_tokens = solution_tokens.view(batch_size * token_count)
             loss = F.cross_entropy(logits, solution_tokens)
-
         return logits, loss
 
-    def generate(self, input_tokens, max_new_token_number):
-        # idx is (B, T) array of indices in the current context
+    def generate(self, input_tokens, max_new_token_number, context_length):
         for _ in range(max_new_token_number):
             context_tokens = input_tokens[:, -context_length:]
-            
-            logits, loss = self(context_tokens)
-            
-            logits = logits[:, -1, :] # becomes (B, C)
-            
-            probs = F.softmax(logits, dim=-1) # (B, C)
-            
-            next_token = torch.multinomial(probs, num_samples=1) # (B, 1)
-            
-            input_tokens = torch.cat((input_tokens, next_token), dim=1) # (B, T+1)
+            logits, _ = self(context_tokens)
+            logits = logits[:, -1, :]
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            input_tokens = torch.cat((input_tokens, next_token), dim=1)
         return input_tokens
 
-model = GptOne()
-initialized_model = model.to(device)
-
-def save_checkpoint(model, loss, checkpoint_dir="checkpoints", base_name=model_file_name):
+# --- Sauvegarde et chargement des checkpoints ---
+def save_checkpoint(model, loss, checkpoint_dir="checkpoints", base_name="gpt_wiki_bigram_two"):
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
     existing = [f for f in os.listdir(checkpoint_dir) if f.startswith(base_name) and f.endswith(".pt")]
@@ -408,29 +240,71 @@ def save_checkpoint(model, loss, checkpoint_dir="checkpoints", base_name=model_f
     torch.save(model.state_dict(), checkpoint_path)
     print("Checkpoint sauvegardé :", checkpoint_path)
 
-def load_checkpoint(model, checkpoint_path):
+def load_checkpoint(model, checkpoint_path, device):
     state_dict = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(state_dict)
     print("Checkpoint chargé depuis :", checkpoint_path)
 
-
-def detokenizeTokens(generated_tokens):
-    return detokenize(generated_tokens[0].tolist())
-
-
-
-def generate_text(max_new_token_number):
+# --- Fonctions de génération de texte ---
+def generate_text(model, detokenize_func, int_to_string, max_new_token_number, context_length, device):
     starting_context = torch.zeros((1, 1), dtype=torch.long, device=device)
-    generated_tokens = model.generate(starting_context, max_new_token_number=max_new_token_number)
-    generated_text = detokenize(generated_tokens[0].tolist())
+    generated_tokens = model.generate(starting_context, max_new_token_number, context_length)
+    generated_text = detokenize_func(generated_tokens[0].tolist(), int_to_string)
     return generated_text
 
-def perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement):
+def generate_and_print_text(model, context_length, detokenize_func, int_to_string, max_new_token_number, tokens_per_print, starting_context):
+    print(detokenize_func(starting_context[0].tolist(), int_to_string), end='', flush=True)
+    generated_tokens = starting_context
+    for _ in range(max_new_token_number // tokens_per_print):
+        generated_tokens = model.generate(generated_tokens, tokens_per_print, context_length)
+        full_text = detokenize_func(generated_tokens[0].tolist(), int_to_string)
+        new_text = full_text[-tokens_per_print:]
+        print(new_text, end='', flush=True)
+
+def generate_and_save_text(model, context_length, detokenize_func, int_to_string, max_new_token_number, tokens_per_print, starting_context, file_name):
+    generated_tokens = starting_context
+    generated_text = detokenize_func(generated_tokens[0].tolist(), int_to_string)
+    for _ in range(max_new_token_number // tokens_per_print):
+        generated_tokens = model.generate(generated_tokens, tokens_per_print, context_length)
+        full_text = detokenize_func(generated_tokens[0].tolist(), int_to_string)
+        new_text = full_text[-tokens_per_print:]
+        generated_text += new_text
+    save_str_to_file(generated_text, file_name)
+
+def generate_print_and_save_text(model, context_length, detokenize_func, int_to_string, max_new_token_number, tokens_per_print, starting_context, file_name):
+    generated_tokens = starting_context.clone()
+    initial_text = detokenize_func(generated_tokens[0].tolist(), int_to_string)
+    print(initial_text, end='', flush=True)
+    all_text = initial_text
+    steps = max_new_token_number // tokens_per_print
+    for _ in range(steps):
+        generated_tokens = model.generate(generated_tokens, tokens_per_print, context_length)
+        detok_full = detokenize_func(generated_tokens[0].tolist(), int_to_string)
+        new_part = detok_full[-tokens_per_print:]
+        print(new_part, end='', flush=True)
+        all_text += new_part
+    time.sleep(10)
+    save_str_to_file(all_text, file_name)
+    print(f"\nTexte intégral sauvegardé dans '{file_name}'.")
+
+def inspect_characters(text):
+    for idx, c in enumerate(text):
+        code_point = ord(c)
+        name = unicodedata.name(c, "UNKNOWN")
+        print(f"{idx:3d} | {repr(c)} | U+{code_point:04X} | {name}")
+# Write the first 1000 re-detokenized tokens to a text file
+def write_first_1000_tokens_to_file(tokenized_data, file_name, detokenize_func, int_to_string):
+    first_1000 = tokenized_data.tolist()[:1000]
+    detokenized_text = detokenize_func(first_1000, int_to_string)
+    save_str_to_file(detokenized_text, file_name)
+# --- Boucle d'entraînement ---
+def perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement,
+                            model, training_data, evaluation_data, context_length, batch_size,
+                            eval_iteration_count, device, get_batch_func):
     print(f"Evaluating losses at step {step}...")
-    losses = calculate_mean_losses()
+    losses = calculate_mean_losses(model, training_data, evaluation_data, context_length, batch_size, eval_iteration_count, device, get_batch_func)
     print(f"step {step}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
     print(f"Current min_loss: {best_val_loss:.4f}")
-    
     if losses['val'] < best_val_loss:
         best_val_loss = losses['val']
         no_improvement_count = 0
@@ -438,128 +312,64 @@ def perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_im
         no_improvement_count += 1
         if no_improvement_count >= max_no_improvement:
             print(f"Validation loss did not improve for {max_no_improvement} consecutive evaluations. Stopping training.")
-            save_checkpoint(initialized_model, losses['val'])
+            save_checkpoint(model, losses['val'])
             return True, best_val_loss, no_improvement_count
     return False, best_val_loss, no_improvement_count
 
-starting_context = torch.tensor([tokenize("En 1998, la coupe du monde a été gagnée par")]).to(device)
-def generate_and_print_text(max_new_token_number, tokens_per_print=1, starting_context=starting_context):
-    print(detokenizeTokens(starting_context), end='', flush=True)
-    generated_tokens = starting_context
-    for _ in range(max_new_token_number // tokens_per_print):
-        
-        generated_tokens = model.generate(generated_tokens, tokens_per_print)
-        generated_text = detokenizeTokens(generated_tokens)[-tokens_per_print]
-        print(generated_text, end='', flush=True)
-
-def generate_and_save_text(max_new_token_number, tokens_per_print=1, starting_context=starting_context, file_name='generated_text.txt'):
-    generated_tokens = starting_context
-    generated_text = detokenizeTokens(starting_context)
+def train(model, training_data, evaluation_data, context_length, batch_size, maximum_training_steps,
+          evaluation_interval, short_eval_interval, checkpoint_interval, generate_interval,
+          time_estimation_interval, eval_iteration_count, short_eval_iters, learning_rate, device,
+          max_new_token_number_preview, generate_and_print_text_func, get_batch_func,
+          calculate_mean_losses_func, calculate_short_mean_losses_func, save_checkpoint_func,
+          tokenize_func, string_to_int, detokenize_func, int_to_string):
     
-    for _ in range(max_new_token_number // tokens_per_print):
-        generated_tokens = model.generate(generated_tokens, tokens_per_print)
-        generated_text += detokenizeTokens(generated_tokens)[-1]
-    
-    save_str_to_file(generated_text, file_name)
-
-def inspect_characters(text):
-    import unicodedata
-    for idx, c in enumerate(text):
-        # Récupère le code Unicode
-        code_point = ord(c)
-        # Nom officiel (ou "UNKNOWN" s'il n'y en a pas)
-        name = unicodedata.name(c, "UNKNOWN")
-        # Affiche l’index, le caractère affichable, le code hexadécimal et le nom
-        print(f"{idx:3d} | {repr(c)} | U+{code_point:04X} | {name}")
-
-def generate_print_and_save_text(max_new_token_number,
-                                 tokens_per_print=1,
-                                 starting_context=starting_context,
-                                 file_name='generated_text.txt'):
-
-    generated_tokens = starting_context.clone()
-    # On détokénise la portion de départ
-    initial_text = detokenizeTokens(generated_tokens)
-    print(initial_text, end='', flush=True)
-
-    # On maintient un texte cumulatif pour l'enregistrement final
-    all_text = initial_text
-    
-    # On boucle pour générer `max_new_token_number` tokens, 
-    # par paquets de `tokens_per_print`.
-    steps = max_new_token_number // tokens_per_print
-    for _ in range(steps):
-        # Génére `tokens_per_print` tokens de plus
-        generated_tokens = model.generate(generated_tokens, tokens_per_print)
-
-        # Détokénise la séquence complète
-        detok_full = detokenizeTokens(generated_tokens)
-
-        # Extraire la *tranche finale* correspondant aux nouveaux tokens générés
-        # Si chaque token (modèle bigram) est 1 "caractère" dans la detokenization, 
-        # on peut prendre '[-tokens_per_print:]'.
-        new_part = detok_full[-tokens_per_print:]
-
-        # Afficher cette portion nouvellement générée
-        print(new_part, end='', flush=True)
-
-        # L'ajouter au texte cumulatif
-        all_text += new_part
-
-    # Enfin, sauvegarde du texte complet
-    # inspect_characters(all_text)
-    time.sleep(10)
-    save_str_to_file(all_text, file_name)
-    print(f"\nTexte intégral sauvegardé dans '{file_name}'.")
-
-
-
-# create a PyTorch optimizer
-def train():
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    
     print('THE MODEL HAS STARTED TRAINING')
     
-    global best_val_loss
     best_val_loss = float('inf')
     best_short_eval_loss = float('inf')
     no_improvement_count = 0
     max_no_improvement = 500
     short_no_improvement_count = 0
     max_short_no_improvement = 500
-    
     starting_timer = time.time()
     
     for step in range(maximum_training_steps):
         if step % evaluation_interval == 0 or step == maximum_training_steps - 1:
-            stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement)
+            stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(
+                step, best_val_loss, no_improvement_count, max_no_improvement,
+                model, training_data, evaluation_data, context_length, batch_size,
+                eval_iteration_count, device, get_batch_func)
             if stop_training:
                 break
         
         if step % short_eval_interval == 0:
             print(f"Performing short evaluation at step {step}...")
-            short_losses = calculate_short_mean_losses()
+            short_losses = calculate_short_losses = calculate_short_losses = calculate_short_mean_losses_func(
+                model, training_data, evaluation_data, context_length, batch_size, short_eval_iters, device, get_batch_func)
             print(f"step {step}: short train loss {short_losses['train']:.4f}, short val loss {short_losses['val']:.4f}")
             print(f"Current min_short_loss: {best_short_eval_loss:.4f}")
-            
             if short_losses['val'] < best_short_eval_loss:
                 best_short_eval_loss = short_losses['val']
                 short_no_improvement_count = 0
             else:
                 short_no_improvement_count += 1
                 if short_no_improvement_count >= max_short_no_improvement:
-                    stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement)
+                    stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(
+                        step, best_val_loss, no_improvement_count, max_no_improvement,
+                        model, training_data, evaluation_data, context_length, batch_size,
+                        eval_iteration_count, device, get_batch_func)
                     if stop_training:
                         break
         
         if step % checkpoint_interval == 0 or step == maximum_training_steps - 1:
             print(f"Saving checkpoint at step {step}...")
-            save_checkpoint(initialized_model, best_val_loss)
+            save_checkpoint_func(model, best_val_loss)
         
         if step % generate_interval == 0 or step == maximum_training_steps - 1:
             print(f"Generating text at step {step}...")
-            starting_context = torch.tensor(tokenize("Elon Musk est "), dtype=torch.long, device=device).unsqueeze(0)
-            generate_and_print_text(max_new_token_number_preview, tokens_per_print=1, starting_context=starting_context)
+            starting_context = torch.tensor(tokenize_func("Elon Musk est ", string_to_int), dtype=torch.long, device=device).unsqueeze(0)
+            generate_and_print_text_func(model, context_length, detokenize_func, int_to_string, max_new_token_number_preview, 1, starting_context)
         
         if step % time_estimation_interval == 0 or step == maximum_training_steps - 1:
             print(f"Estimating remaining time at step {step}...")
@@ -569,16 +379,14 @@ def train():
             remaining_steps = maximum_training_steps - step
             remaining_minutes = remaining_steps * minutes_by_step
             predicted_end_time = datetime.now() + timedelta(minutes=remaining_minutes)
-            
-            print("="*50)
+            print("=" * 50)
             print(f"Step: {step}/{maximum_training_steps}")
-            print(f"Elapsed Time: {current_training_duration/60:.2f} minutes")
+            print(f"Elapsed Time: {current_training_duration / 60:.2f} minutes")
             print(f"Remaining Time: {remaining_minutes:.2f} minutes")
             print(f"Predicted End Time: {predicted_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            print("="*50)
-
-        random_input_tokens, solution_tokens = get_batch('train')
-    
+            print("=" * 50)
+        
+        random_input_tokens, solution_tokens = get_batch_func('train', training_data, evaluation_data, context_length, batch_size, device)
         logits, loss = model(random_input_tokens, solution_tokens)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -587,12 +395,73 @@ def train():
     print('Training has finished :)')
     print(datetime.now())
 
-load_checkpoint(initialized_model, './checkpoints/gpt_wiki_bigram_one_27_loss46760.pt')
-train()
+# --- Programme principal ---
+if __name__ == '__main__':
+    # Définition des hyperparamètres
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    batch_size = 32 
+    context_length = 364
+    maximum_training_steps = 50000
+    learning_rate = 4e-3
+    head_count = 12
+    layer_count = 2
+    dropout = 0.10
+    embedding_dimension_count = 576 
+    evaluation_interval = 2000
+    eval_iteration_count = 60
+    short_eval_interval = 150
+    short_eval_iters = 5
+    max_new_token_number = 100
+    max_new_token_number_preview = 100
+    model_file_name = "gpt_wiki_bigram_two"
+    generate_interval = 250
+    checkpoint_interval = 5000
+    time_estimation_interval = 50
 
+    # Chargement des données
+    training_text, eval_text = load_data('wiki.train.tokens', 'wiki.test.tokens')
 
+    # Création des vocabulaires et mappings
+    vocabulary_size, string_to_int, int_to_string = create_vocabularies(training_text)
 
+    # Préparation des tenseurs de données
+    tokenized_training_data, tokenized_evaluation_data = prepare_tokenized_data(training_text, eval_text, tokenize, string_to_int)
 
+    # Sauvegarde d'extraits
+    write_first_1000_tokens_to_file(tokenized_training_data, 'first_1000_tokens.txt', detokenize, int_to_string)
+    write_first_2000_chars_to_file(training_text, 'first_2000_chars.txt')
 
-# generate_and_print_text(max_new_token_number, tokens_per_print=1)
-generate_print_and_save_text(max_new_token_number, tokens_per_print=1)
+    # Création du modèle
+    model = GptOne(vocabulary_size, embedding_dimension_count, context_length, dropout, head_count, layer_count, device)
+    model = model.to(device)
+    
+    # Entraînement
+    train(model,
+          tokenized_training_data,
+          tokenized_evaluation_data,
+          context_length,
+          batch_size,
+          maximum_training_steps,
+          evaluation_interval,
+          short_eval_interval,
+          checkpoint_interval,
+          generate_interval,
+          time_estimation_interval,
+          eval_iteration_count,
+          short_eval_iters,
+          learning_rate,
+          device,
+          max_new_token_number_preview,
+          generate_and_print_text,
+          get_batch,
+          calculate_mean_losses,
+          calculate_short_mean_losses,
+          save_checkpoint,
+          tokenize,
+          string_to_int,
+          detokenize,
+          int_to_string)
+
+    # Génération finale et sauvegarde
+    starting_context = torch.tensor(tokenize("En 1998, la coupe du monde a été gagnée par", string_to_int), dtype=torch.long, device=device).unsqueeze(0)
+    generate_print_and_save_text(model, context_length, detokenize, int_to_string, max_new_token_number, 1, starting_context, 'generated_text.txt')
