@@ -253,13 +253,17 @@ def generate_text(model, detokenize_func, int_to_string, max_new_token_number, c
     return generated_text
 
 def generate_and_print_text(model, context_length, detokenize_func, int_to_string, max_new_token_number, tokens_per_print, starting_context):
+    # Affiche le contexte initial
     print(detokenize_func(starting_context[0].tolist(), int_to_string), end='', flush=True)
     generated_tokens = starting_context
     for _ in range(max_new_token_number // tokens_per_print):
+        # Génère tokens_per_print tokens de plus
         generated_tokens = model.generate(generated_tokens, tokens_per_print, context_length)
-        full_text = detokenize_func(generated_tokens[0].tolist(), int_to_string)
-        new_text = full_text[-tokens_per_print:]
+        # Extraction des tokens générés lors de cette itération
+        new_token_indices = generated_tokens[0].tolist()[-tokens_per_print:]
+        new_text = ''.join([int_to_string[t] for t in new_token_indices])
         print(new_text, end='', flush=True)
+
 
 def generate_and_save_text(model, context_length, detokenize_func, int_to_string, max_new_token_number, tokens_per_print, starting_context, file_name):
     generated_tokens = starting_context
