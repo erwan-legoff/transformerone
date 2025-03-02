@@ -56,7 +56,7 @@ def count_char_occurences(training_text):
     return char_occurences
 
 # --- Création des vocabulaires ---
-def create_vocabularies(training_text, max_bigram_vocabulary_size=1000, max_char_vocabulary_size=200):
+def create_vocabularies(training_text, max_bigram_vocabulary_size=538, max_char_vocabulary_size=117):
     bigram_occurences = count_bigram_occurences(training_text)
     char_occurences = count_char_occurences(training_text)
     save_dict_to_file(bigram_occurences, 'bigram_occurences.txt')
@@ -75,9 +75,14 @@ def create_vocabularies(training_text, max_bigram_vocabulary_size=1000, max_char
     return vocabulary_size, string_to_int, int_to_string
 
 # --- Préparation des tenseurs de données ---
-def prepare_tokenized_data(training_text, eval_text, tokenize_func, string_to_int):
+def prepare_tokenized_data(training_text, eval_text, tokenize_func, string_to_int, max_train_tokens=None):
     tokenized_training_data = torch.tensor(tokenize_func(training_text, string_to_int), dtype=torch.long)
     tokenized_evaluation_data = torch.tensor(tokenize_func(eval_text, string_to_int), dtype=torch.long)
+    
+    # Si un nombre maximum de tokens est défini, on tronque le dataset d'entraînement
+    if max_train_tokens is not None:
+        tokenized_training_data = tokenized_training_data[:max_train_tokens]
+    
     return tokenized_training_data, tokenized_evaluation_data
 
 # --- Extraction de sous-batch ---
@@ -265,31 +270,43 @@ def generate_and_print_text(model, context_length, detokenize_func, int_to_strin
         print(new_text, end='', flush=True)
 
 
-def generate_and_save_text(model, context_length, detokenize_func, int_to_string, max_new_token_number, tokens_per_print, starting_context, file_name):
+def generate_and_print_text(model, context_length, detokenize_func, int_to_string,
+                            max_new_token_number, tokens_per_print, starting_context, return_text=False):
+    """
+    Génère et affiche le texte par incréments de tokens.
+    Si return_text est True, renvoie le texte généré en plus de l'affichage.
+    """
+    # Initialisation
+    text_generated = detokenize_func(starting_context[0].tolist(), int_to_string)
+    print(text_generated, end='', flush=True)
     generated_tokens = starting_context
-    generated_text = detokenize_func(generated_tokens[0].tolist(), int_to_string)
-    for _ in range(max_new_token_number // tokens_per_print):
-        generated_tokens = model.generate(generated_tokens, tokens_per_print, context_length)
-        full_text = detokenize_func(generated_tokens[0].tolist(), int_to_string)
-        new_text = full_text[-tokens_per_print:]
-        generated_text += new_text
-    save_str_to_file(generated_text, file_name)
-
-def generate_print_and_save_text(model, context_length, detokenize_func, int_to_string, max_new_token_number, tokens_per_print, starting_context, file_name):
-    generated_tokens = starting_context.clone()
-    initial_text = detokenize_func(generated_tokens[0].tolist(), int_to_string)
-    print(initial_text, end='', flush=True)
-    all_text = initial_text
+    
     steps = max_new_token_number // tokens_per_print
     for _ in range(steps):
         generated_tokens = model.generate(generated_tokens, tokens_per_print, context_length)
-        detok_full = detokenize_func(generated_tokens[0].tolist(), int_to_string)
-        new_part = detok_full[-tokens_per_print:]
-        print(new_part, end='', flush=True)
-        all_text += new_part
+        full_text = detokenize_func(generated_tokens[0].tolist(), int_to_string)
+        # Extraction sur la base des tokens générés et non des caractères
+        new_token_indices = generated_tokens[0].tolist()[-tokens_per_print:]
+        new_text = ''.join([int_to_string[t] for t in new_token_indices])
+        print(new_text, end='', flush=True)
+        text_generated += new_text
+        
+    if return_text:
+        return text_generated
+
+def generate_print_and_save_text(model, context_length, detokenize_func, int_to_string,
+                                 max_new_token_number, tokens_per_print, starting_context, file_name):
+    """
+    Appelle generate_and_print_text pour générer et afficher le texte,
+    puis sauvegarde l'intégralité dans un fichier.
+    """
+    final_text = generate_and_print_text(model, context_length, detokenize_func, int_to_string,
+                                           max_new_token_number, tokens_per_print, starting_context,
+                                           return_text=True)
     time.sleep(10)
-    save_str_to_file(all_text, file_name)
+    save_str_to_file(final_text, file_name)
     print(f"\nTexte intégral sauvegardé dans '{file_name}'.")
+
 
 def inspect_characters(text):
     for idx, c in enumerate(text):
@@ -404,11 +421,11 @@ if __name__ == '__main__':
     # Définition des hyperparamètres
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     batch_size = 32 
-    context_length = 364
+    context_length = 250
     maximum_training_steps = 50000
-    learning_rate = 4e-3
-    head_count = 12
-    layer_count = 2
+    learning_rate = 2e-3
+    head_count = 6
+    layer_count = 8
     dropout = 0.10
     embedding_dimension_count = 576 
     evaluation_interval = 2000
@@ -417,20 +434,23 @@ if __name__ == '__main__':
     short_eval_iters = 5
     max_new_token_number = 100
     max_new_token_number_preview = 100
-    model_file_name = "gpt_wiki_bigram_two"
+    model_file_name = "gpt_wiki_bigram_three"
     generate_interval = 250
     checkpoint_interval = 5000
     time_estimation_interval = 50
 
     # Chargement des données
-    training_text, eval_text = load_data('wiki.train.tokens', 'wiki.test.tokens')
+    training_text, eval_text = load_data('../wiki.train.tokens', '../wiki.test.tokens')
 
     # Création des vocabulaires et mappings
     vocabulary_size, string_to_int, int_to_string = create_vocabularies(training_text)
 
     # Préparation des tenseurs de données
     tokenized_training_data, tokenized_evaluation_data = prepare_tokenized_data(training_text, eval_text, tokenize, string_to_int)
-
+    print("training set size :")
+    print(len(tokenized_training_data))
+    print("tokens by iteration :")
+    print(len(tokenized_training_data) / (maximum_training_steps * batch_size))
     # Sauvegarde d'extraits
     write_first_1000_tokens_to_file(tokenized_training_data, 'first_1000_tokens.txt', detokenize, int_to_string)
     write_first_2000_chars_to_file(training_text, 'first_2000_chars.txt')
@@ -438,7 +458,7 @@ if __name__ == '__main__':
     # Création du modèle
     model = GptOne(vocabulary_size, embedding_dimension_count, context_length, dropout, head_count, layer_count, device)
     model = model.to(device)
-    
+    # load_checkpoint(model, '../checkpoints/gpt_wiki_bigram_two_15_loss44544.pt', device)
     # Entraînement
     train(model,
           tokenized_training_data,
