@@ -21,3 +21,5 @@ logs/
 # Ignorer les fichiers spécifiques à un projet
 config.json
 secrets.env
+wiki.test.tokens
+wiki.train.tokens
