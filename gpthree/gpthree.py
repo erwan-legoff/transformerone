@@ -149,7 +149,7 @@ def create_vocabularies(training_text,
     # 6. **Save the full vocabulary**
     save_list_to_file(full_vocabulary, os.path.join(directory, 'full_vocabulary.txt'))
 
-    # 7. **Création des mappings pour la tokenisation**
+    # 7. **Create mappings for tokenization**
     vocabulary_size = len(full_vocabulary)
     string_to_int = {string: idx for idx, string in enumerate(full_vocabulary)}
     int_to_string = {idx: string for idx, string in enumerate(full_vocabulary)}
@@ -157,18 +157,18 @@ def create_vocabularies(training_text,
     return vocabulary_size, string_to_int, int_to_string
 
 
-# --- Préparation des tenseurs de données ---
+# --- Prepare tokenized data tensors ---
 def prepare_tokenized_data(training_text, eval_text, tokenize_func, string_to_int, max_train_tokens=None):
     tokenized_training_data = torch.tensor(tokenize_func(training_text, string_to_int), dtype=torch.long)
     tokenized_evaluation_data = torch.tensor(tokenize_func(eval_text, string_to_int), dtype=torch.long)
     
-    # Si un nombre maximum de tokens est défini, on tronque le dataset d'entraînement
+    # If a maximum number of tokens is defined, truncate the training dataset
     if max_train_tokens is not None:
         tokenized_training_data = tokenized_training_data[:max_train_tokens]
     
     return tokenized_training_data, tokenized_evaluation_data
 
-# --- Extraction de sous-batch ---
+# --- Extract sub-batch ---
 def get_batch(data_partition_name, training_data, evaluation_data, context_length, batch_size, device):
     data = training_data if data_partition_name == 'train' else evaluation_data
     max_offset = len(data) - context_length - 1
@@ -177,7 +177,7 @@ def get_batch(data_partition_name, training_data, evaluation_data, context_lengt
     solution_tokens = torch.stack([data[offset+1:offset+1+context_length] for offset in random_start_offsets])
     return input_tokens.to(device), solution_tokens.to(device)
 
-# --- Fonctions d'évaluation des pertes ---
+# --- Loss evaluation functions ---
 @torch.no_grad()
 def calculate_mean_losses(model, training_data, evaluation_data, context_length, batch_size, eval_iteration_count, device, get_batch_func):
     mean_losses = {}
@@ -206,7 +206,7 @@ def calculate_short_mean_losses(model, training_data, evaluation_data, context_l
     model.train()
     return mean_losses
 
-# --- Classes du modèle ---
+# --- Model classes ---
 class AttentionHead(nn.Module):
     def __init__(self, head_size, embedding_dimension_count, context_length, dropout):
         super().__init__()
@@ -309,13 +309,13 @@ class GptOne(nn.Module):
             input_tokens = torch.cat((input_tokens, next_token), dim=1)
         return input_tokens
 
-# --- Sauvegarde et chargement des checkpoints ---
+# --- Checkpoint saving and loading ---
 def save_checkpoint(model, loss, hyperparams, checkpoint_dir="checkpoints", base_name="gpt_wiki_bigram_two"):
     """
-    Sauvegarde le checkpoint avec dans le nom les hyperparamètres
-    qui définissent intrinsèquement le modèle.
+    Save the checkpoint with the hyperparameters in the name
+    that intrinsically define the model.
     
-    hyperparams: dictionnaire contenant par exemple :
+    hyperparams: dictionary containing for example:
         {
             'head_count': 12,
             'layer_count': 2,
