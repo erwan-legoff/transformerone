@@ -101,10 +101,13 @@ def save_sorted_n_gram_occurences(n_gram_occurences, file_name, directory="vocab
 def create_vocabularies(training_text, 
                         max_bigrams=538, max_chars=117, 
                         max_trigrams=1000, max_quadgrams=1500, 
-                        max_pentagrams=2000, max_sextegrams=2500, 
+                        max_pentagrams=2173, max_sextegrams=7000,
+                        max_septegrams = 7000, max_octograms=7000, 
                         directory="vocabulary"):
 
     # 1. **Count occurrences**
+    octogram_occurences = count_n_gram_occurences(training_text, gram_size=8)
+    septegram_occurences = count_n_gram_occurences(training_text, gram_size=7)
     sextegram_occurences = count_n_gram_occurences(training_text, gram_size=6)
     pentagram_occurences = count_n_gram_occurences(training_text, gram_size=5)
     quadgram_occurences = count_n_gram_occurences(training_text, gram_size=4)
@@ -113,6 +116,8 @@ def create_vocabularies(training_text,
     char_occurences = count_char_occurences(training_text)
 
     # 2. **Sort and save occurrences in "vocabulary/"**
+    sorted_octograms = save_sorted_n_gram_occurences(octogram_occurences, 'octogram_occurences.txt', directory)
+    sorted_septegrams = save_sorted_n_gram_occurences(septegram_occurences, 'septegram_occurences.txt', directory)
     sorted_sextegrams = save_sorted_n_gram_occurences(sextegram_occurences, 'sextegram_occurences.txt', directory)
     sorted_pentagrams = save_sorted_n_gram_occurences(pentagram_occurences, 'pentagram_occurences.txt', directory)
     sorted_quadgrams = save_sorted_n_gram_occurences(quadgram_occurences, 'quadgram_occurences.txt', directory)
@@ -121,6 +126,8 @@ def create_vocabularies(training_text,
     sorted_chars = save_sorted_n_gram_occurences(char_occurences, 'char_occurences.txt', directory)
 
     # 3. **Select the top N most frequent**
+    top_octograms = dict(sorted_octograms[:max_octograms])
+    top_septegrams = dict(sorted_septegrams[:max_septegrams])
     top_sextegrams = dict(sorted_sextegrams[:max_sextegrams])
     top_pentagrams = dict(sorted_pentagrams[:max_pentagrams])
     top_quadgrams = dict(sorted_quadgrams[:max_quadgrams])
@@ -129,6 +136,8 @@ def create_vocabularies(training_text,
     top_chars = dict(sorted_chars[:max_chars])
 
     # 4. **Save the truncated N-grams**
+    save_dict_to_file(top_octograms, os.path.join(directory, 'top_octograms.txt'))
+    save_dict_to_file(top_septegrams, os.path.join(directory, 'top_septegrams.txt'))
     save_dict_to_file(top_sextegrams, os.path.join(directory, 'top_sextegrams.txt'))
     save_dict_to_file(top_pentagrams, os.path.join(directory, 'top_pentagrams.txt'))
     save_dict_to_file(top_quadgrams, os.path.join(directory, 'top_quadgrams.txt'))
@@ -138,6 +147,8 @@ def create_vocabularies(training_text,
 
     # 5. **Create the combined vocabulary**
     full_vocabulary = (
+        list(top_octograms.keys()) +
+        list(top_septegrams.keys()) + 
         list(top_sextegrams.keys()) + 
         list(top_pentagrams.keys()) + 
         list(top_quadgrams.keys()) + 
@@ -534,7 +545,7 @@ if __name__ == '__main__':
     short_eval_iters = 5
     max_new_token_number = 100
     max_new_token_number_preview = 100
-    model_file_name = "gpt_wiki_sectegram_one_mini"
+    model_file_name = "gpt_wiki_octogram_one_mini"
     generate_interval = 800
     checkpoint_interval = 5000
     time_estimation_interval = 200
