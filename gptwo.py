@@ -9,7 +9,7 @@ from torch.nn import functional as F
 batch_size = 32 
 context_length = 364
 maximum_training_steps = 50000
-evaluation_interval = 1000
+evaluation_interval = 2000
 eval_iteration_count = 60
 learning_rate = 4e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -19,11 +19,11 @@ embedding_dimension_count = 576
 head_count = 12
 layer_count = 12
 dropout = 0.10 # It will randomly silence some neuron (the fraction)
-max_new_token_number = 1000
-max_new_token_number_preview = 125
-model_file_name = "gpt_wiki_bigram_one"
-generate_interval = 500
-checkpoint_interval = 2000
+max_new_token_number = 100
+max_new_token_number_preview = 100
+model_file_name = "gpt_wiki_bigram_two"
+generate_interval = 250
+checkpoint_interval = 5000
 time_estimation_interval = 50
 short_eval_interval = 150
 short_eval_iters = 5
@@ -429,16 +429,16 @@ def perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_im
     print(f"step {step}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
     print(f"Current min_loss: {best_val_loss:.4f}")
     
-    # if losses['val'] < best_val_loss:
-    #     best_val_loss = losses['val']
-    #     no_improvement_count = 0
-    # else:
-    #     no_improvement_count += 1
-    #     if no_improvement_count >= max_no_improvement:
-    #         print(f"Validation loss did not improve for {max_no_improvement} consecutive evaluations. Stopping training.")
-    #         save_checkpoint(initialized_model, losses['val'])
-    #         return True, best_val_loss, no_improvement_count
-    # return False, best_val_loss, no_improvement_count
+    if losses['val'] < best_val_loss:
+        best_val_loss = losses['val']
+        no_improvement_count = 0
+    else:
+        no_improvement_count += 1
+        if no_improvement_count >= max_no_improvement:
+            print(f"Validation loss did not improve for {max_no_improvement} consecutive evaluations. Stopping training.")
+            save_checkpoint(initialized_model, losses['val'])
+            return True, best_val_loss, no_improvement_count
+    return False, best_val_loss, no_improvement_count
 
 starting_context = torch.tensor([tokenize("En 1998, la coupe du monde a été gagnée par")]).to(device)
 def generate_and_print_text(max_new_token_number, tokens_per_print=1, starting_context=starting_context):
@@ -515,17 +515,18 @@ def generate_print_and_save_text(max_new_token_number,
 # create a PyTorch optimizer
 def train():
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    starting_timer = time.time()
+    
     print('THE MODEL HAS STARTED TRAINING')
-    print(datetime.now())
     
     global best_val_loss
     best_val_loss = float('inf')
     best_short_eval_loss = float('inf')
     no_improvement_count = 0
-    max_no_improvement = 20
+    max_no_improvement = 500
     short_no_improvement_count = 0
-    max_short_no_improvement = 20
+    max_short_no_improvement = 500
+    
+    starting_timer = time.time()
     
     for step in range(maximum_training_steps):
         if step % evaluation_interval == 0 or step == maximum_training_steps - 1:
@@ -539,15 +540,15 @@ def train():
             print(f"step {step}: short train loss {short_losses['train']:.4f}, short val loss {short_losses['val']:.4f}")
             print(f"Current min_short_loss: {best_short_eval_loss:.4f}")
             
-            # if short_losses['val'] < best_short_eval_loss:
-            #     best_short_eval_loss = short_losses['val']
-            #     short_no_improvement_count = 0
-            # else:
-            #     short_no_improvement_count += 1
-            #     if short_no_improvement_count >= max_short_no_improvement:
-            #         stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement)
-            #         if stop_training:
-            #             break
+            if short_losses['val'] < best_short_eval_loss:
+                best_short_eval_loss = short_losses['val']
+                short_no_improvement_count = 0
+            else:
+                short_no_improvement_count += 1
+                if short_no_improvement_count >= max_short_no_improvement:
+                    stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement)
+                    if stop_training:
+                        break
         
         if step % checkpoint_interval == 0 or step == maximum_training_steps - 1:
             print(f"Saving checkpoint at step {step}...")
@@ -556,7 +557,6 @@ def train():
         if step % generate_interval == 0 or step == maximum_training_steps - 1:
             print(f"Generating text at step {step}...")
             starting_context = torch.tensor(tokenize("Elon Musk est "), dtype=torch.long, device=device).unsqueeze(0)
-
             generate_and_print_text(max_new_token_number_preview, tokens_per_print=1, starting_context=starting_context)
         
         if step % time_estimation_interval == 0 or step == maximum_training_steps - 1:
@@ -575,12 +575,13 @@ def train():
             print(f"Predicted End Time: {predicted_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
             print("="*50)
 
-        random_input_tokens, solution_tokenS = get_batch('train')
+        random_input_tokens, solution_tokens = get_batch('train')
     
-        logits, loss = model(random_input_tokens, solution_tokenS)
+        logits, loss = model(random_input_tokens, solution_tokens)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
+    
     print('Training has finished :)')
     print(datetime.now())
 

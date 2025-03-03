@@ -4,17 +4,17 @@ import time
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from FileUtils import *  # On suppose que ce module reste inchangé
+from FileUtils import *  # Assuming this module remains unchanged
 import unicodedata
 
-# --- Fonctions de normalisation Unicode ---
+# --- Unicode normalization functions ---
 def to_decomposed_unicode(text: str) -> str:
     return unicodedata.normalize('NFD', text)
 
 def to_unified_unicode(text: str) -> str:
     return unicodedata.normalize('NFC', text)
 
-# --- Fonctions de tokenisation/détokénisation ---
+# --- Tokenization/detokenization functions ---
 def tokenize(text, string_to_int):
     text = to_decomposed_unicode(text)
     unknown_token = 0 
@@ -33,7 +33,7 @@ def tokenize(text, string_to_int):
 def detokenize(int_tokens, int_to_string):
     return to_unified_unicode(''.join([int_to_string[i] for i in int_tokens]))
 
-# --- Chargement des données ---
+# --- Data loading ---
 def load_data(training_file, evaluation_file):
     with open(training_file, 'r', encoding='utf-8') as f:
         training_text = f.read()
@@ -41,7 +41,7 @@ def load_data(training_file, evaluation_file):
         eval_text = f.read()
     return training_text, eval_text
 
-# --- Comptage des occurences ---
+# --- Occurrence counting ---
 def count_bigram_occurences(training_text):
     bigram_occurences = {}
     for c in range(len(training_text)-1):
@@ -65,11 +65,11 @@ def count_char_occurences(training_text):
 
 def get_top_n_grams(n_gram_occurences, max_size):
     """
-    Trie un dictionnaire d'occurrences de n-grams et garde les `max_size` plus fréquents.
+    Sorts a dictionary of n-gram occurrences and keeps the `max_size` most frequent ones.
     
-    :param n_gram_occurences: Dictionnaire contenant les n-grams et leurs occurrences.
-    :param max_size: Nombre maximal d'éléments à conserver.
-    :return: Dictionnaire trié avec les n-grams les plus fréquents.
+    :param n_gram_occurences: Dictionary containing n-grams and their occurrences.
+    :param max_size: Maximum number of elements to keep.
+    :return: Sorted dictionary with the most frequent n-grams.
     """
     return dict(sorted(n_gram_occurences.items(), key=lambda item: item[1], reverse=True)[:max_size])
 
@@ -78,33 +78,33 @@ import os
 
 def save_sorted_n_gram_occurences(n_gram_occurences, file_name, directory="vocabulary"):
     """
-    Trie les occurrences de n-grams par fréquence décroissante et les enregistre dans un fichier.
+    Sorts n-gram occurrences by descending frequency and saves them to a file.
 
-    :param n_gram_occurences: Dictionnaire contenant les n-grams et leurs occurrences.
-    :param file_name: Nom du fichier de sortie.
-    :param directory: Dossier où stocker les fichiers.
+    :param n_gram_occurences: Dictionary containing n-grams and their occurrences.
+    :param file_name: Output file name.
+    :param directory: Directory to store the files.
     """
     if not os.path.exists(directory):
         os.makedirs(directory)
 
     sorted_n_grams = sorted(n_gram_occurences.items(), key=lambda item: item[1], reverse=True)
 
-    # Sauvegarde des occurrences triées
+    # Save sorted occurrences
     with open(os.path.join(directory, file_name), 'w', encoding='utf-8') as f:
         for n_gram, count in sorted_n_grams:
             f.write(f"{n_gram}\t{count}\n")
     
-    return sorted_n_grams  # Renvoie la liste triée pour usage ultérieur
+    return sorted_n_grams  # Return the sorted list for later use
 
 
-# --- Création des vocabulaires ---
+# --- Vocabulary creation ---
 def create_vocabularies(training_text, 
                         max_bigrams=538, max_chars=117, 
                         max_trigrams=1000, max_quadgrams=1500, 
                         max_pentagrams=2000, max_sextegrams=2500, 
                         directory="vocabulary"):
 
-    # 1. **Calcul des occurrences**
+    # 1. **Count occurrences**
     sextegram_occurences = count_n_gram_occurences(training_text, gram_size=6)
     pentagram_occurences = count_n_gram_occurences(training_text, gram_size=5)
     quadgram_occurences = count_n_gram_occurences(training_text, gram_size=4)
@@ -112,7 +112,7 @@ def create_vocabularies(training_text,
     bigram_occurences = count_n_gram_occurences(training_text, gram_size=2)
     char_occurences = count_char_occurences(training_text)
 
-    # 2. **Trier et enregistrer les occurrences dans "vocabulary/"**
+    # 2. **Sort and save occurrences in "vocabulary/"**
     sorted_sextegrams = save_sorted_n_gram_occurences(sextegram_occurences, 'sextegram_occurences.txt', directory)
     sorted_pentagrams = save_sorted_n_gram_occurences(pentagram_occurences, 'pentagram_occurences.txt', directory)
     sorted_quadgrams = save_sorted_n_gram_occurences(quadgram_occurences, 'quadgram_occurences.txt', directory)
@@ -120,7 +120,7 @@ def create_vocabularies(training_text,
     sorted_bigrams = save_sorted_n_gram_occurences(bigram_occurences, 'bigram_occurences.txt', directory)
     sorted_chars = save_sorted_n_gram_occurences(char_occurences, 'char_occurences.txt', directory)
 
-    # 3. **Sélection des N plus fréquents**
+    # 3. **Select the top N most frequent**
     top_sextegrams = dict(sorted_sextegrams[:max_sextegrams])
     top_pentagrams = dict(sorted_pentagrams[:max_pentagrams])
     top_quadgrams = dict(sorted_quadgrams[:max_quadgrams])
@@ -128,7 +128,7 @@ def create_vocabularies(training_text,
     top_bigrams = dict(sorted_bigrams[:max_bigrams])
     top_chars = dict(sorted_chars[:max_chars])
 
-    # 4. **Sauvegarde des N-grams tronqués**
+    # 4. **Save the truncated N-grams**
     save_dict_to_file(top_sextegrams, os.path.join(directory, 'top_sextegrams.txt'))
     save_dict_to_file(top_pentagrams, os.path.join(directory, 'top_pentagrams.txt'))
     save_dict_to_file(top_quadgrams, os.path.join(directory, 'top_quadgrams.txt'))
@@ -136,7 +136,7 @@ def create_vocabularies(training_text,
     save_dict_to_file(top_bigrams, os.path.join(directory, 'top_bigrams.txt'))
     save_dict_to_file(top_chars, os.path.join(directory, 'top_chars.txt'))
 
-    # 5. **Création du vocabulaire combiné**
+    # 5. **Create the combined vocabulary**
     full_vocabulary = (
         list(top_sextegrams.keys()) + 
         list(top_pentagrams.keys()) + 
@@ -146,7 +146,7 @@ def create_vocabularies(training_text,
         list(top_chars.keys())
     )
 
-    # 6. **Sauvegarde du vocabulaire complet**
+    # 6. **Save the full vocabulary**
     save_list_to_file(full_vocabulary, os.path.join(directory, 'full_vocabulary.txt'))
 
     # 7. **Création des mappings pour la tokenisation**
@@ -154,7 +154,7 @@ def create_vocabularies(training_text,
     string_to_int = {string: idx for idx, string in enumerate(full_vocabulary)}
     int_to_string = {idx: string for idx, string in enumerate(full_vocabulary)}
 
-    return vocabulary_size, string_to_int
+    return vocabulary_size, string_to_int, int_to_string
 
 
 # --- Préparation des tenseurs de données ---
