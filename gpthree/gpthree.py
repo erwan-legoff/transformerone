@@ -49,6 +49,14 @@ def count_bigram_occurences(training_text):
         bigram_occurences[bigram] = bigram_occurences.get(bigram, 0) + 1
     return bigram_occurences
 
+def count_n_gram_occurences(training_text, gram_size):
+    bigram_occurences = {}
+    for c in range(len(training_text)-gram_size):
+        n_gram = training_text[c:c+gram_size]
+
+        bigram_occurences[n_gram] = bigram_occurences.get(n_gram, 0) + 1
+    return bigram_occurences
+
 def count_char_occurences(training_text):
     char_occurences = {}
     for c in training_text:
@@ -57,9 +65,16 @@ def count_char_occurences(training_text):
 
 # --- Création des vocabulaires ---
 def create_vocabularies(training_text, max_bigram_vocabulary_size=538, max_char_vocabulary_size=117):
+    sextegram_occurences = count_n_gram_occurences(training_text, gram_size=6)
+    pintagram_occurences = count_n_gram_occurences(training_text, gram_size=5)
+    quadgram_occurences = count_n_gram_occurences(training_text, gram_size=4)
+    trigram_occurences = count_n_gram_occurences(training_text, gram_size=3)
+    
     bigram_occurences = count_bigram_occurences(training_text)
+    bigram_occurences_2 = count_n_gram_occurences(training_text, gram_size=2)
     char_occurences = count_char_occurences(training_text)
     save_dict_to_file(bigram_occurences, 'bigram_occurences.txt')
+    save_dict_to_file(bigram_occurences_2, 'bigram_occurences_2.txt')
     save_dict_to_file(char_occurences, 'char_occurences.txt')
 
     top_bigrams_dict = dict(sorted(bigram_occurences.items(), key=lambda item: item[1], reverse=True)[:max_bigram_vocabulary_size])
@@ -227,9 +242,26 @@ class GptOne(nn.Module):
         return input_tokens
 
 # --- Sauvegarde et chargement des checkpoints ---
-def save_checkpoint(model, loss, checkpoint_dir="checkpoints", base_name="gpt_wiki_bigram_two"):
+def save_checkpoint(model, loss, hyperparams, checkpoint_dir="checkpoints", base_name="gpt_wiki_bigram_two"):
+    """
+    Sauvegarde le checkpoint avec dans le nom les hyperparamètres
+    qui définissent intrinsèquement le modèle.
+    
+    hyperparams: dictionnaire contenant par exemple :
+        {
+            'head_count': 12,
+            'layer_count': 2,
+            'embedding_dimension_count': 576,
+            'context_length': 364,
+            'dropout': 0.10
+        }
+    """
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
+    
+    # Construire une chaîne représentant les hyperparamètres
+    hp_str = f"heads{hyperparams['head_count']}_layers{hyperparams['layer_count']}_emb{hyperparams['embedding_dimension_count']}_ctx{hyperparams['context_length']}_drop{hyperparams['dropout']}"
+    
     existing = [f for f in os.listdir(checkpoint_dir) if f.startswith(base_name) and f.endswith(".pt")]
     max_index = 0
     for fname in existing:
@@ -240,7 +272,7 @@ def save_checkpoint(model, loss, checkpoint_dir="checkpoints", base_name="gpt_wi
             continue
     new_index = max_index + 1
     loss_int = int(loss * 10000)
-    checkpoint_name = f"{base_name}_{new_index}_loss{loss_int}.pt"
+    checkpoint_name = f"{base_name}_{hp_str}_{new_index}_loss{loss_int}.pt"
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
     torch.save(model.state_dict(), checkpoint_path)
     print("Checkpoint sauvegardé :", checkpoint_path)
@@ -321,7 +353,7 @@ def write_first_1000_tokens_to_file(tokenized_data, file_name, detokenize_func, 
 # --- Boucle d'entraînement ---
 def perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement,
                             model, training_data, evaluation_data, context_length, batch_size,
-                            eval_iteration_count, device, get_batch_func):
+                            eval_iteration_count, device, get_batch_func, hyperparams):
     print(f"Evaluating losses at step {step}...")
     losses = calculate_mean_losses(model, training_data, evaluation_data, context_length, batch_size, eval_iteration_count, device, get_batch_func)
     print(f"step {step}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
@@ -333,7 +365,7 @@ def perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_im
         no_improvement_count += 1
         if no_improvement_count >= max_no_improvement:
             print(f"Validation loss did not improve for {max_no_improvement} consecutive evaluations. Stopping training.")
-            save_checkpoint(model, losses['val'])
+            save_checkpoint(model, losses['val'], hyperparams)
             return True, best_val_loss, no_improvement_count
     return False, best_val_loss, no_improvement_count
 
@@ -342,7 +374,7 @@ def train(model, training_data, evaluation_data, context_length, batch_size, max
           time_estimation_interval, eval_iteration_count, short_eval_iters, learning_rate, device,
           max_new_token_number_preview, generate_and_print_text_func, get_batch_func,
           calculate_mean_losses_func, calculate_short_mean_losses_func, save_checkpoint_func,
-          tokenize_func, string_to_int, detokenize_func, int_to_string):
+          tokenize_func, string_to_int, detokenize_func, int_to_string, hyperparams):
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     print('THE MODEL HAS STARTED TRAINING')
@@ -360,13 +392,13 @@ def train(model, training_data, evaluation_data, context_length, batch_size, max
             stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(
                 step, best_val_loss, no_improvement_count, max_no_improvement,
                 model, training_data, evaluation_data, context_length, batch_size,
-                eval_iteration_count, device, get_batch_func)
+                eval_iteration_count, device, get_batch_func, hyperparams)
             if stop_training:
                 break
         
         if step % short_eval_interval == 0:
             print(f"Performing short evaluation at step {step}...")
-            short_losses = calculate_short_losses = calculate_short_losses = calculate_short_mean_losses_func(
+            short_losses = calculate_short_mean_losses_func(
                 model, training_data, evaluation_data, context_length, batch_size, short_eval_iters, device, get_batch_func)
             print(f"step {step}: short train loss {short_losses['train']:.4f}, short val loss {short_losses['val']:.4f}")
             print(f"Current min_short_loss: {best_short_eval_loss:.4f}")
@@ -379,13 +411,13 @@ def train(model, training_data, evaluation_data, context_length, batch_size, max
                     stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(
                         step, best_val_loss, no_improvement_count, max_no_improvement,
                         model, training_data, evaluation_data, context_length, batch_size,
-                        eval_iteration_count, device, get_batch_func)
+                        eval_iteration_count, device, get_batch_func, hyperparams)
                     if stop_training:
                         break
         
         if step % checkpoint_interval == 0 or step == maximum_training_steps - 1:
             print(f"Saving checkpoint at step {step}...")
-            save_checkpoint_func(model, best_val_loss)
+            save_checkpoint_func(model, best_val_loss, hyperparams)
         
         if step % generate_interval == 0 or step == maximum_training_steps - 1:
             print(f"Generating text at step {step}...")
@@ -420,24 +452,24 @@ def train(model, training_data, evaluation_data, context_length, batch_size, max
 if __name__ == '__main__':
     # Définition des hyperparamètres
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    batch_size = 32 
+    batch_size = 64 
     context_length = 250
-    maximum_training_steps = 50000
+    maximum_training_steps = 50000 * 45
     learning_rate = 2e-3
     head_count = 6
-    layer_count = 8
+    layer_count = 2
     dropout = 0.10
-    embedding_dimension_count = 576 
-    evaluation_interval = 2000
-    eval_iteration_count = 60
-    short_eval_interval = 150
+    embedding_dimension_count = 360 
+    evaluation_interval = 800
+    eval_iteration_count = 30
+    short_eval_interval = 400
     short_eval_iters = 5
     max_new_token_number = 100
     max_new_token_number_preview = 100
-    model_file_name = "gpt_wiki_bigram_three"
-    generate_interval = 250
+    model_file_name = "gpt_wiki_bigram_three_mini"
+    generate_interval = 800
     checkpoint_interval = 5000
-    time_estimation_interval = 50
+    time_estimation_interval = 200
 
     # Chargement des données
     training_text, eval_text = load_data('../wiki.train.tokens', '../wiki.test.tokens')
@@ -458,7 +490,16 @@ if __name__ == '__main__':
     # Création du modèle
     model = GptOne(vocabulary_size, embedding_dimension_count, context_length, dropout, head_count, layer_count, device)
     model = model.to(device)
-    # load_checkpoint(model, '../checkpoints/gpt_wiki_bigram_two_15_loss44544.pt', device)
+    
+    # Définir les hyperparamètres pour la sauvegarde
+    hyperparams = {
+        'head_count': head_count,
+        'layer_count': layer_count,
+        'embedding_dimension_count': embedding_dimension_count,
+        'context_length': context_length,
+        'dropout': dropout
+    }
+
     # Entraînement
     train(model,
           tokenized_training_data,
@@ -484,7 +525,8 @@ if __name__ == '__main__':
           tokenize,
           string_to_int,
           detokenize,
-          int_to_string)
+          int_to_string,
+          hyperparams)
 
     # Génération finale et sauvegarde
     starting_context = torch.tensor(tokenize("En 1998, la coupe du monde a été gagnée par", string_to_int), dtype=torch.long, device=device).unsqueeze(0)
