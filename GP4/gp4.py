@@ -71,6 +71,26 @@ def count_n_gram_occurences(training_data, gram_size):
         
         bigram_occurences[sub] = bigram_occurences.get(sub, 0) + 1
     return bigram_occurences
+import random
+def count_n_gram_occurences_optimized(training_data, gram_size, max_char_skip = 10):
+    bigram_occurences = {}
+    c = 0
+    while c < len(training_data) - gram_size + 1:
+        sub = training_data[c : c + gram_size]
+        
+        # Si training_data est une liste, sub = [x, y, ...] => non hashable
+        # Donc on le convertit en tuple
+        if isinstance(training_data, list):
+            sub = tuple(sub)
+        
+        bigram_occurences[sub] = bigram_occurences.get(sub, 0) + 1
+        current_max_c = (len(training_data) - gram_size)
+        remaining_chars = current_max_c - c
+        current_max_skip = min(max_char_skip,remaining_chars)
+        # We want to skip randomly to echantillonized our data
+        next_offset = random.randint(1,1+current_max_skip)
+        c += next_offset
+    return bigram_occurences
 
 def count_char_occurences(training_text):
     char_occurences = {}
@@ -146,7 +166,8 @@ def create_vocabularies_V2(training_text,
                         max_pentagrams=2173, max_sextegrams=7000,
                         max_septegrams = 7000, max_octograms=7000, 
                         directory="vocabulary_v2",
-                        tokenization_iteration = 1000):
+                        tokenization_iteration = 1000,
+                        max_char_skip = 50):
     char_occurences = count_char_occurences(training_text)
     sorted_chars = sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)
     top_chars = dict(sorted_chars)
@@ -166,10 +187,12 @@ def create_vocabularies_V2(training_text,
     tokenized_compressed_text = tokenize(training_text,current_string_to_int,max_gram_chars=1)
     # 1. **Count char occurrences**
     for i in range(tokenization_iteration):
-        
-        bigram_occurences = count_n_gram_occurences(tokenized_compressed_text, gram_size=2)
-        # 2. **Sort and save occurrences in "vocabulary/"**
+        print("bigram_occurences_start")
+        bigram_occurences = count_n_gram_occurences_optimized(tokenized_compressed_text, gram_size=2, max_char_skip=max_char_skip)
+        print("bigram_occurences_end")
+
         sorted_bigrams = sorted(bigram_occurences.items(), key=lambda item: item[1], reverse=True)
+
         
 
         # 3. **Select the top N most frequent**
@@ -188,9 +211,10 @@ def create_vocabularies_V2(training_text,
         new_token_id = len(current_string_to_int)
         current_string_to_int[current_top_bigram_strings] = new_token_id
         current_int_to_string[new_token_id] = current_top_bigram_strings
-        print('merge_in_place')
+        print('merge_in_place_start')
         print(i)
         tokenized_compressed_text  = merge_in_place(tokenized_compressed_text, current_top_bigram_ints,new_token_id)
+        print('merge_in_place_end')
 
 
 
@@ -640,10 +664,10 @@ def train(model, training_data, evaluation_data, context_length, batch_size, max
 if __name__ == '__main__':
     # Définition des hyperparamètres
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    tokenization_iteration = 500
+    tokenization_iteration = 2000
     batch_size = 64 
     context_length = 500
-    maximum_training_steps = 50000
+    maximum_training_steps = 25000
     learning_rate = 2e-3
     head_count = 6
     layer_count = 4
@@ -667,7 +691,7 @@ if __name__ == '__main__':
     training_text, eval_text = load_data('../wiki.train.tokens', '../wiki.test.tokens')
 
     # Création des vocabulaires et mappings
-    vocabulary_size, string_to_int, int_to_string = create_vocabularies_V2(eval_text,tokenization_iteration=tokenization_iteration)
+    vocabulary_size, string_to_int, int_to_string = create_vocabularies_V2(training_text,tokenization_iteration=tokenization_iteration)
 
     # Préparation des tenseurs de données
     tokenized_training_data, tokenized_evaluation_data = prepare_tokenized_data(training_text, eval_text, tokenize, string_to_int)
