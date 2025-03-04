@@ -59,12 +59,17 @@ def count_bigram_occurences(training_text):
         bigram_occurences[bigram] = bigram_occurences.get(bigram, 0) + 1
     return bigram_occurences
 
-def count_n_gram_occurences(training_text, gram_size):
+def count_n_gram_occurences(training_data, gram_size):
     bigram_occurences = {}
-    for c in range(len(training_text)-gram_size):
-        n_gram = training_text[c:c+gram_size]
-
-        bigram_occurences[n_gram] = bigram_occurences.get(n_gram, 0) + 1
+    for i in range(len(training_data) - gram_size + 1):
+        sub = training_data[i : i + gram_size]
+        
+        # Si training_data est une liste, sub = [x, y, ...] => non hashable
+        # Donc on le convertit en tuple
+        if isinstance(training_data, list):
+            sub = tuple(sub)
+        
+        bigram_occurences[sub] = bigram_occurences.get(sub, 0) + 1
     return bigram_occurences
 
 def count_char_occurences(training_text):
@@ -106,8 +111,102 @@ def save_sorted_n_gram_occurences(n_gram_occurences, file_name, directory="vocab
     
     return sorted_n_grams  # Return the sorted list for later use
 
+def merge_in_place(token_sequence, bigram, new_token):
+    """
+    Fusionne le bigram 'bigram' par 'new_token' dans 'token_sequence'.
+    Renvoie une NOUVELLE liste de tokens après la fusion.
+    
+    :param token_sequence: liste d’entiers (IDs de tokens).
+    :param bigram: tuple (token_id_1, token_id_2) à fusionner.
+    :param new_token: entier représentant l'ID du nouveau token.
+    :return: nouvelle liste de tokens où les occurrences de bigram sont remplacées par new_token.
+    """
+    merged_sequence = []
+    i = 0
+    n = len(token_sequence)
+    
+    while i < n:
+        # Si on est sur l'avant-dernier token, on peut regarder la paire (i, i+1)
+        if i < n - 1 and (token_sequence[i], token_sequence[i+1]) == bigram:
+            # On remplace la paire par le nouveau token
+            merged_sequence.append(new_token)
+            # On saute i+1 car on vient de fusionner cette paire
+            i += 2
+        else:
+            # Sinon on recopie le token courant tel quel
+            merged_sequence.append(token_sequence[i])
+            i += 1
+
+    return merged_sequence
 
 # --- Vocabulary creation ---
+def create_vocabularies_V2(training_text, 
+                        max_bigrams=538, 
+                        max_trigrams=1000, max_quadgrams=1500, 
+                        max_pentagrams=2173, max_sextegrams=7000,
+                        max_septegrams = 7000, max_octograms=7000, 
+                        directory="vocabulary_v2",
+                        tokenization_iteration = 1000):
+    char_occurences = count_char_occurences(training_text)
+    sorted_chars = sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)
+    top_chars = dict(sorted_chars)
+    current_vocabulary = list(top_chars.keys())
+    # Juste après avoir construit top_chars et current_vocabulary:
+    all_chars_in_text = set(training_text)  # l'ensemble de tous les caractères distincts
+    dict_chars = set(current_vocabulary)    # l'ensemble des chars que vous avez retenus
+
+    missing_chars = all_chars_in_text - dict_chars
+    if len(missing_chars) > 0:
+        print("Caractères manquants (non couverts par le vocabulaire) :", missing_chars)
+    else:
+        print("Tous les caractères du texte sont couverts par le vocabulaire initial.")
+        current_string_to_int = {string: idx for idx, string in enumerate(current_vocabulary)}
+        current_int_to_string = {idx: string for idx, string in enumerate(current_vocabulary)}
+    
+    tokenized_compressed_text = tokenize(training_text,current_string_to_int,max_gram_chars=1)
+    # 1. **Count char occurrences**
+    for i in range(tokenization_iteration):
+        
+        bigram_occurences = count_n_gram_occurences(tokenized_compressed_text, gram_size=2)
+        # 2. **Sort and save occurrences in "vocabulary/"**
+        sorted_bigrams = sorted(bigram_occurences.items(), key=lambda item: item[1], reverse=True)
+        
+
+        # 3. **Select the top N most frequent**
+        if not sorted_bigrams:
+            print("Aucun bigram trouvé, fin du processus.")
+            break  # Stopper si plus de bigrams à fusionner
+        
+        current_top_bigram_ints = sorted_bigrams[0][0]
+        current_top_bigram_strings = current_int_to_string.get(current_top_bigram_ints[0], "") + \
+                                     current_int_to_string.get(current_top_bigram_ints[1], "")
+
+
+        current_vocabulary.append(current_top_bigram_strings)
+
+        
+        new_token_id = len(current_string_to_int)
+        current_string_to_int[current_top_bigram_strings] = new_token_id
+        current_int_to_string[new_token_id] = current_top_bigram_strings
+        print('merge_in_place')
+        print(i)
+        tokenized_compressed_text  = merge_in_place(tokenized_compressed_text, current_top_bigram_ints,new_token_id)
+
+
+
+    # 5. **Create the combined vocabulary**
+    full_vocabulary = current_vocabulary
+        
+    # 6. **Save the full vocabulary**
+    save_list_to_file(full_vocabulary, os.path.join(directory, 'full_vocabulary.txt'))
+
+    # 7. **Create mappings for tokenization**
+    vocabulary_size = len(full_vocabulary)
+    string_to_int = {string: idx for idx, string in enumerate(full_vocabulary)}
+    int_to_string = {idx: string for idx, string in enumerate(full_vocabulary)}
+
+    return vocabulary_size, string_to_int, int_to_string
+
 def create_vocabularies(training_text, 
                         max_bigrams=538, max_chars=117, 
                         max_trigrams=1000, max_quadgrams=1500, 
@@ -541,12 +640,13 @@ def train(model, training_data, evaluation_data, context_length, batch_size, max
 if __name__ == '__main__':
     # Définition des hyperparamètres
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    tokenization_iteration = 500
     batch_size = 64 
-    context_length = 250
-    maximum_training_steps = 100000
+    context_length = 500
+    maximum_training_steps = 50000
     learning_rate = 2e-3
     head_count = 6
-    layer_count = 2
+    layer_count = 4
     dropout = 0.10
     embedding_dimension_count = 360 
     evaluation_interval = 800
@@ -564,7 +664,7 @@ if __name__ == '__main__':
     training_text, eval_text = load_data('../wiki.train.tokens', '../wiki.test.tokens')
 
     # Création des vocabulaires et mappings
-    vocabulary_size, string_to_int, int_to_string = create_vocabularies(training_text)
+    vocabulary_size, string_to_int, int_to_string = create_vocabularies_V2(eval_text,tokenization_iteration=tokenization_iteration)
 
     # Préparation des tenseurs de données
     tokenized_training_data, tokenized_evaluation_data = prepare_tokenized_data(training_text, eval_text, tokenize, string_to_int)
