@@ -659,6 +659,9 @@ if __name__ == '__main__':
     generate_interval = 800
     checkpoint_interval = 5000
     time_estimation_interval = 200
+    train = False
+    load = True
+    model_to_load = "checkpoints/gpt_wiki_bigram_two_heads6_layers4_emb360_ctx500_drop0.1_19_loss21833"
 
     # Chargement des données
     training_text, eval_text = load_data('../wiki.train.tokens', '../wiki.test.tokens')
@@ -688,34 +691,36 @@ if __name__ == '__main__':
         'context_length': context_length,
         'dropout': dropout
     }
-
+    if(load):
+        model = load_checkpoint(model=model,checkpoint_path=model_to_load,device=device)
     # Entraînement
-    train(model,
-          tokenized_training_data,
-          tokenized_evaluation_data,
-          context_length,
-          batch_size,
-          maximum_training_steps,
-          evaluation_interval,
-          short_eval_interval,
-          checkpoint_interval,
-          generate_interval,
-          time_estimation_interval,
-          eval_iteration_count,
-          short_eval_iters,
-          learning_rate,
-          device,
-          max_new_token_number_preview,
-          generate_and_print_text,
-          get_batch,
-          calculate_mean_losses,
-          calculate_short_mean_losses,
-          save_checkpoint,
-          tokenize,
-          string_to_int,
-          detokenize,
-          int_to_string,
-          hyperparams)
+    if(train):
+        train(model,
+            tokenized_training_data,
+            tokenized_evaluation_data,
+            context_length,
+            batch_size,
+            maximum_training_steps,
+            evaluation_interval,
+            short_eval_interval,
+            checkpoint_interval,
+            generate_interval,
+            time_estimation_interval,
+            eval_iteration_count,
+            short_eval_iters,
+            learning_rate,
+            device,
+            max_new_token_number_preview,
+            generate_and_print_text,
+            get_batch,
+            calculate_mean_losses,
+            calculate_short_mean_losses,
+            save_checkpoint,
+            tokenize,
+            string_to_int,
+            detokenize,
+            int_to_string,
+            hyperparams)
 
     # Génération finale et sauvegarde
     starting_context = torch.tensor(tokenize("En 1998, la coupe du monde a été gagnée par", string_to_int), dtype=torch.long, device=device).unsqueeze(0)
