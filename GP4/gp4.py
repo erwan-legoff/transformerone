@@ -159,6 +159,40 @@ def merge_in_place(token_sequence, bigram, new_token):
 
     return merged_sequence
 
+import json
+from datetime import datetime
+
+def load_tokenizer(tokenizer_path):
+    with open(tokenizer_path, 'r', encoding='utf-8') as f:
+        tokenizer_data = json.load(f)
+    
+    string_to_int = tokenizer_data["string_to_int"]
+    int_to_string = tokenizer_data["int_to_string"]
+    
+    print(f"Tokenizer loaded: {tokenizer_path}")
+    return string_to_int, int_to_string
+
+def save_tokenizer(string_to_int, int_to_string, tokenization_iteration, max_char_skip, directory="tokenizers"):
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    
+    # Construire une chaîne représentant les paramètres du tokenizer
+    tp_str = f"iter{tokenization_iteration}_skip{max_char_skip}"
+    timestamp = datetime.now().strftime("%Y-%m-%d_%Hh")
+    tokenizer_name = f"tokenizer_{tp_str}_{timestamp}.json"
+    tokenizer_path = os.path.join(directory, tokenizer_name)
+    
+    tokenizer_data = {
+        "string_to_int": string_to_int,
+        "int_to_string": int_to_string
+    }
+    
+    with open(tokenizer_path, 'w', encoding='utf-8') as f:
+        json.dump(tokenizer_data, f, ensure_ascii=False, indent=4)
+    
+    print(f"Tokenizer saved: {tokenizer_path}")
+    return tokenizer_path
+
 # --- Vocabulary creation ---
 def create_vocabularies_V2(training_text, 
                         max_bigrams=538, 
@@ -228,8 +262,8 @@ def create_vocabularies_V2(training_text,
     vocabulary_size = len(full_vocabulary)
     string_to_int = {string: idx for idx, string in enumerate(full_vocabulary)}
     int_to_string = {idx: string for idx, string in enumerate(full_vocabulary)}
-
-    return vocabulary_size, string_to_int, int_to_string
+    tokenizer_path = save_tokenizer(string_to_int, int_to_string, tokenization_iteration, max_char_skip)
+    return vocabulary_size, string_to_int, int_to_string, tokenizer_path
 
 def create_vocabularies(training_text, 
                         max_bigrams=538, max_chars=117, 
@@ -686,12 +720,17 @@ if __name__ == '__main__':
     should_train = True
     should_load = False
     model_to_load = "checkpoints/gpt_wiki_bigram_two_heads6_layers4_emb360_ctx500_drop0.1_19_loss21833"
-
+    use_tokenizer = False
+    tokenizer_to_load =""
     # Chargement des données
     training_text, eval_text = load_data('../wiki.train.tokens', '../wiki.test.tokens')
+    
+    if use_tokenizer:
+        string_to_int, int_to_string = load_tokenizer(tokenizer_to_load)
+        vocabulary_size = len(string_to_int)
+    else:
+        vocabulary_size, string_to_int, int_to_string, tokenizer_path = create_vocabularies_V2(training_text, tokenization_iteration=tokenization_iteration)
 
-    # Création des vocabulaires et mappings
-    vocabulary_size, string_to_int, int_to_string = create_vocabularies_V2(training_text,tokenization_iteration=tokenization_iteration)
 
     # Préparation des tenseurs de données
     tokenized_training_data, tokenized_evaluation_data = prepare_tokenized_data(training_text, eval_text, tokenize, string_to_int)
