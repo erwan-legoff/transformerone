@@ -653,14 +653,14 @@ if __name__ == '__main__':
     eval_iteration_count = 30
     short_eval_interval = 400
     short_eval_iters = 5
-    max_new_token_number = 100
+    max_new_token_number = 1000
     max_new_token_number_preview = 100
     model_file_name = "gpt_wiki_octogram_one_mini"
     generate_interval = 800
     checkpoint_interval = 5000
     time_estimation_interval = 200
-    train = False
-    load = True
+    should_train = True
+    should_load = False
     model_to_load = "checkpoints/gpt_wiki_bigram_two_heads6_layers4_emb360_ctx500_drop0.1_19_loss21833"
 
     # Chargement des données
@@ -691,10 +691,10 @@ if __name__ == '__main__':
         'context_length': context_length,
         'dropout': dropout
     }
-    if(load):
+    if(should_load):
         model = load_checkpoint(model=model,checkpoint_path=model_to_load,device=device)
     # Entraînement
-    if(train):
+    if(should_train):
         train(model,
             tokenized_training_data,
             tokenized_evaluation_data,
