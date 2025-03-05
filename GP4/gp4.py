@@ -91,6 +91,37 @@ def count_n_gram_occurences_optimized(training_data, gram_size, max_char_skip = 
         next_offset = random.randint(1,1+current_max_skip)
         c += next_offset
     return bigram_occurences
+import re
+import re
+import random
+
+def count_n_gram_occurences_optimized_no_ponctuation(training_data, gram_size, int_to_string, max_char_skip=10):
+    n_gram_occurrences = {}
+    c = 0
+    # Compilation de la regex pour éviter de la recompiler à chaque itération
+    pattern = re.compile(r"[.,;:!?'\"()«»—\-]")
+    data_len = len(training_data)
+    limit = data_len - gram_size + 1
+
+    while c < limit:
+        sub = training_data[c : c + gram_size]
+        # Si training_data est une liste, convertissons le sous-ensemble en tuple (hashable)
+        if isinstance(training_data, list):
+            sub = tuple(sub)
+
+        # Vérifie si au moins un caractère de 'sub' correspond à une ponctuation.
+        # Utilisation d'une expression génératrice et pattern.search pour un test court-circuité.
+        if not any(pattern.search(int_to_string.get(item, "")) for item in sub):
+            n_gram_occurrences[sub] = n_gram_occurrences.get(sub, 0) + 1
+
+        # Calcul du nombre de caractères restants pour définir le saut aléatoire
+        remaining = data_len - (c + gram_size)
+        current_max_skip = min(max_char_skip, remaining)
+        next_offset = random.randint(1, 1 + current_max_skip)
+        c += next_offset
+
+    return n_gram_occurrences
+
 
 def count_char_occurences(training_text):
     char_occurences = {}
@@ -222,7 +253,7 @@ def create_vocabularies_V2(training_text,
     # 1. **Count char occurrences**
     for i in range(tokenization_iteration):
         print("bigram_occurences_start")
-        bigram_occurences = count_n_gram_occurences_optimized(tokenized_compressed_text, gram_size=2, max_char_skip=max_char_skip)
+        bigram_occurences = count_n_gram_occurences_optimized_no_ponctuation(tokenized_compressed_text, gram_size=2, int_to_string=current_int_to_string,max_char_skip=max_char_skip,)
         print("bigram_occurences_end")
 
         sorted_bigrams = sorted(bigram_occurences.items(), key=lambda item: item[1], reverse=True)
@@ -737,8 +768,15 @@ if __name__ == '__main__':
 
     # Préparation des tenseurs de données
     tokenized_training_data, tokenized_evaluation_data = prepare_tokenized_data(training_text, eval_text, tokenize, string_to_int)
-    print("training set size :")
-    print(len(tokenized_training_data))
+    print("training set size chars :")
+    char_count = len(set(tokenized_training_data))
+    print(char_count)
+    token_count = len(tokenized_training_data)
+    print("training set size tokenized :")
+    print(token_count)
+    print("compression ratio:")
+    print(char_count/token_count)
+    time.sleep(3)
     print("tokens by iteration :")
     print(len(tokenized_training_data) / (maximum_training_steps * batch_size))
     # Sauvegarde d'extraits
