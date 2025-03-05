@@ -671,19 +671,7 @@ def train(model, training_data, evaluation_data, context_length, batch_size, max
             generate_and_print_text_func(model, context_length, detokenize_func, int_to_string, max_new_token_number_preview, 1, starting_context)
         
         if step % time_estimation_interval == 0 or step == maximum_training_steps - 1:
-            print(f"Estimating remaining time at step {step}...")
-            current_time = time.time()
-            current_training_duration = current_time - starting_timer
-            minutes_by_step = current_training_duration / (step + 1) / 60
-            remaining_steps = maximum_training_steps - step
-            remaining_minutes = remaining_steps * minutes_by_step
-            predicted_end_time = datetime.now() + timedelta(minutes=remaining_minutes)
-            print("=" * 50)
-            print(f"Step: {step}/{maximum_training_steps}")
-            print(f"Elapsed Time: {current_training_duration / 60:.2f} minutes")
-            print(f"Remaining Time: {remaining_minutes:.2f} minutes")
-            print(f"Predicted End Time: {predicted_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            print("=" * 50)
+            estimate_time(maximum_training_steps, starting_timer, step)
         
         random_input_tokens, solution_tokens = get_batch_func('train', training_data, evaluation_data, context_length, batch_size, device)
         logits, loss = model(random_input_tokens, solution_tokens)
@@ -693,6 +681,21 @@ def train(model, training_data, evaluation_data, context_length, batch_size, max
     
     print('Training has finished :)')
     print(datetime.now())
+
+def estimate_time(maximum_training_steps, starting_timer, step):
+    print(f"Estimating remaining time at step {step}...")
+    current_time = time.time()
+    current_training_duration = current_time - starting_timer
+    minutes_by_step = current_training_duration / (step + 1) / 60
+    remaining_steps = maximum_training_steps - step
+    remaining_minutes = remaining_steps * minutes_by_step
+    predicted_end_time = datetime.now() + timedelta(minutes=remaining_minutes)
+    print("=" * 50)
+    print(f"Step: {step}/{maximum_training_steps}")
+    print(f"Elapsed Time: {current_training_duration / 60:.2f} minutes")
+    print(f"Remaining Time: {remaining_minutes:.2f} minutes")
+    print(f"Predicted End Time: {predicted_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 50)
 
 # --- Programme principal ---
 if __name__ == '__main__':
