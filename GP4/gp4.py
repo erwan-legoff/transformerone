@@ -172,23 +172,26 @@ def merge_in_place(token_sequence, bigram, new_token):
     :param new_token: entier représentant l'ID du nouveau token.
     :return: nouvelle liste de tokens où les occurrences de bigram sont remplacées par new_token.
     """
-    merged_sequence = []
-    i = 0
-    n = len(token_sequence)
     
-    while i < n:
+    i,j = 0,0
+    token_count = len(token_sequence)
+    merged_sequence = [None] * token_count
+    b0, b1 = bigram
+    while i < token_count:
         # Si on est sur l'avant-dernier token, on peut regarder la paire (i, i+1)
-        if i < n - 1 and (token_sequence[i], token_sequence[i+1]) == bigram:
+        if i < token_count - 1 and token_sequence[i] == b0 and token_sequence[i+1] == b1:
             # On remplace la paire par le nouveau token
-            merged_sequence.append(new_token)
-            # On saute i+1 car on vient de fusionner cette paire
+            merged_sequence[j]=new_token
+            j += 1
+
             i += 2
         else:
             # Sinon on recopie le token courant tel quel
-            merged_sequence.append(token_sequence[i])
+            merged_sequence[j]=token_sequence[i]
+            j += 1
             i += 1
 
-    return merged_sequence
+    return merged_sequence[:j]
 
 import json
 from datetime import datetime
