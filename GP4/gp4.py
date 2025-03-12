@@ -235,7 +235,7 @@ def create_vocabularies_V2(training_text,
                         max_septegrams = 7000, max_octograms=7000, 
                         directory="vocabulary_v2",
                         tokenization_iteration = 1000,
-                        max_char_skip = 50):
+                        max_char_skip = 100):
     char_occurences = count_char_occurences(training_text)
     sorted_chars = sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)
     top_chars = dict(sorted_chars)
@@ -741,24 +741,24 @@ if __name__ == '__main__':
     maximum_training_steps = 25000
     learning_rate = 2e-3
     head_count = 6
-    layer_count = 4
+    layer_count = 6
     dropout = 0.10
     embedding_dimension_count = 360 
     evaluation_interval = 800
     eval_iteration_count = 30
     short_eval_interval = 400
     short_eval_iters = 5
-    max_new_token_number = 1000
+    max_new_token_number = 20000
     max_new_token_number_preview = 100
-    model_file_name = "gpt_wiki_octogram_one_mini"
-    generate_interval = 800
-    checkpoint_interval = 5000
+    model_file_name = "gpt_wiki_bpe_one"
+    generate_interval = 1600
+    checkpoint_interval = 10000
     time_estimation_interval = 200
     should_train = True
     should_load = False
     model_to_load = "checkpoints/gpt_wiki_bigram_two_heads6_layers4_emb360_ctx500_drop0.1_19_loss21833"
-    use_tokenizer = False
-    tokenizer_to_load =""
+    use_tokenizer = True
+    tokenizer_to_load ="tokenizers/tokenizer_iter2000_skip100_2025-03-06_02h.json"
     # Chargement des données
     training_text, eval_text = load_data('../wiki.train.tokens', '../wiki.test.tokens')
     
@@ -766,13 +766,13 @@ if __name__ == '__main__':
         string_to_int, int_to_string = load_tokenizer(tokenizer_to_load)
         vocabulary_size = len(string_to_int)
     else:
-        vocabulary_size, string_to_int, int_to_string, tokenizer_path = create_vocabularies_V2(training_text, tokenization_iteration=tokenization_iteration)
+        vocabulary_size, string_to_int, int_to_string, tokenizer_path = create_vocabularies_V2(training_text, tokenization_iteration=tokenization_iteration,max_char_skip=100)
 
 
     # Préparation des tenseurs de données
     tokenized_training_data, tokenized_evaluation_data = prepare_tokenized_data(training_text, eval_text, tokenize, string_to_int)
     print("training set size chars :")
-    char_count = len(set(tokenized_training_data))
+    char_count = len(set(training_text))
     print(char_count)
     token_count = len(tokenized_training_data)
     print("training set size tokenized :")
