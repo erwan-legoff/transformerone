@@ -99,7 +99,7 @@ def create_vocabularies_V2(training_text,
     # 1. **Count char occurrences**
     for i in range(tokenization_iteration):
         print("bigram_occurences_start")
-        bigram_occurences = count_n_gram_occurences_optimized(tokenized_compressed_text, gram_size=2, int_to_string=current_int_to_string,max_char_skip=max_char_skip,)
+        bigram_occurences = count_n_gram_occurences_optimized(tokenized_compressed_text, gram_size=2,max_char_skip=max_char_skip,)
         print("bigram_occurences_end")
 
         sorted_bigrams = sorted(bigram_occurences.items(), key=lambda item: item[1], reverse=True)

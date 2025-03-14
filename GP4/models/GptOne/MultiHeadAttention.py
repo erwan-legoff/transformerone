@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torch
-import AttentionHead
+from models.GptOne import AttentionHead
 class MultiHeadAttention(nn.Module):
     def __init__(self, head_count, head_size, embedding_dimension_count, context_length, dropout):
         super().__init__()

@@ -1,7 +1,8 @@
 import torch.nn as nn
 import torch
-import AttentionThinkingBlock
 from torch.nn import functional as F
+
+from models.GptOne import AttentionThinkingBlock
 class GptOne(nn.Module):
     def __init__(self, vocabulary_size, embedding_dimension_count, context_length, dropout, head_count, layer_count, device):
         super().__init__()

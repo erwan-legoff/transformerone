@@ -4,7 +4,7 @@ import time
 
 import torch
 
-from GP4.models.ModelHandler import save_checkpoint
+from models.ModelHandler import save_checkpoint
 
 
 def get_batch(data_partition_name, training_data, evaluation_data, context_length, batch_size, device):

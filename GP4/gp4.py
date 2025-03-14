@@ -1,12 +1,12 @@
 import time
 import torch
 
-from GP4.FileUtils import load_data, write_first_2000_chars_to_file
-from GP4.Stats import write_first_1000_tokens_to_file
-from GP4.models.ModelHandler import generate_and_print_text, generate_print_and_save_text, load_checkpoint, save_checkpoint
-from GP4.models.Trainer import calculate_mean_losses, calculate_short_mean_losses, get_batch, train
-from GP4.tokenizer_one import create_vocabularies_V2, detokenize, load_tokenizer, prepare_tokenized_data, tokenize
-from gptone import GptOne
+from FileUtils import load_data, write_first_2000_chars_to_file
+from Stats import write_first_1000_tokens_to_file
+from models.ModelHandler import generate_and_print_text, generate_print_and_save_text, load_checkpoint, save_checkpoint
+from models.Trainer import calculate_mean_losses, calculate_short_mean_losses, get_batch, train
+from tokenizer_one import create_vocabularies_V2, detokenize, load_tokenizer, prepare_tokenized_data, tokenize
+from models.GptOne import GptOne
 
 
 # --- Programme principal ---
@@ -35,10 +35,10 @@ if __name__ == '__main__':
     should_train = True
     should_load = False
     model_to_load = "checkpoints/gpt_wiki_bigram_two_heads6_layers4_emb360_ctx500_drop0.1_19_loss21833"
-    use_tokenizer = True
-    tokenizer_to_load ="tokenizers/tokenizer_iter2000_skip100_2025-03-06_02h.json"
+    use_tokenizer = False
+    tokenizer_to_load ="GP4/tokenizers/tokenizer_iter2000_skip100_2025-03-06_02h.json"
     # Chargement des données
-    training_text, eval_text = load_data('../wiki.train.tokens', '../wiki.test.tokens')
+    training_text, eval_text = load_data('./wiki.train.tokens', './wiki.test.tokens')
     
     if use_tokenizer:
         string_to_int, int_to_string = load_tokenizer(tokenizer_to_load)

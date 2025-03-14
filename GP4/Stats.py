@@ -17,7 +17,7 @@ import os
 import random
 import unicodedata
 
-from GP4.FileUtils import save_str_to_file
+from FileUtils import save_str_to_file
 def count_n_gram_occurences_optimized(training_data, gram_size, max_char_skip = 10):
     bigram_occurences = {}
     c = 0
