@@ -79,6 +79,8 @@ def create_vocabularies_V2(training_text,
                         directory="vocabulary_v2",
                         tokenization_iteration = 1000,
                         max_char_skip = 100):
+    print('TOKENIZER ITERATIONS:')
+    print(tokenization_iteration)
     char_occurences = count_char_occurences(training_text)
     sorted_chars = sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)
     top_chars = dict(sorted_chars)
