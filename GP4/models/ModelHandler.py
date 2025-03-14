@@ -42,6 +42,7 @@ def load_checkpoint(model, checkpoint_path, device):
     state_dict = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(state_dict)
     print("Checkpoint chargé depuis :", checkpoint_path)
+    return model
 
 # --- Fonctions de génération de texte ---
 def generate_text(model, detokenize_func, int_to_string, max_new_token_number, context_length, device):

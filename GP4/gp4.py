@@ -13,6 +13,7 @@ from models.GptOne.GptOne import GptOne
 if __name__ == '__main__':
     # Définition des hyperparamètres
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    final_testing_sentence = "2+2="
     tokenization_iteration = 1000
     batch_size = 64 
     context_length = 250
@@ -32,7 +33,7 @@ if __name__ == '__main__':
     generate_interval = 1600
     checkpoint_interval = 10000
     time_estimation_interval = 200
-    should_train = False
+    should_train = True
     should_load = True
     model_to_load = "checkpoints/gpt_wiki_bigram_two_heads6_layers3_emb360_ctx250_drop0.1_12_loss27604.pt"
     use_tokenizer = True
@@ -124,5 +125,5 @@ if __name__ == '__main__':
             hyperparams)
 
     # Génération finale et sauvegarde
-    starting_context = torch.tensor(tokenize("En 1998, la coupe du monde a été gagnée par", string_to_int), dtype=torch.long, device=device).unsqueeze(0)
+    starting_context = torch.tensor(tokenize(final_testing_sentence, string_to_int), dtype=torch.long, device=device).unsqueeze(0)
     generate_print_and_save_text(model, context_length, detokenize, int_to_string, max_new_token_number, 1, starting_context, 'generated_text.txt')
