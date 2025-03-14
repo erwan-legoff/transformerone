@@ -6,14 +6,14 @@ from Stats import write_first_1000_tokens_to_file
 from models.ModelHandler import generate_and_print_text, generate_print_and_save_text, load_checkpoint, save_checkpoint
 from models.Trainer import calculate_mean_losses, calculate_short_mean_losses, get_batch, train
 from tokenizer_one import create_vocabularies_V2, detokenize, load_tokenizer, prepare_tokenized_data, tokenize
-from models.GptOne import GptOne
+from models.GptOne.GptOne import GptOne
 
 
 # --- Programme principal ---
 if __name__ == '__main__':
     # Définition des hyperparamètres
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    tokenization_iteration = 2000
+    tokenization_iteration = 10
     batch_size = 64 
     context_length = 500
     maximum_training_steps = 25000
@@ -50,7 +50,7 @@ if __name__ == '__main__':
     # Préparation des tenseurs de données
     tokenized_training_data, tokenized_evaluation_data = prepare_tokenized_data(training_text, eval_text, tokenize, string_to_int)
     print("training set size chars :")
-    char_count = len(set(training_text))
+    char_count = len(training_text)
     print(char_count)
     token_count = len(tokenized_training_data)
     print("training set size tokenized :")

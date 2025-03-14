@@ -1,6 +1,6 @@
 import torch.nn as nn
-from models.GptOne import MultiHeadAttention
-from models.GptOne import FeedForwardNetwork
+from models.GptOne.MultiHeadAttention import MultiHeadAttention
+from models.GptOne.FeedForwardNetwork import FeedForwardNetwork
 import torch
 from torch.nn import functional as F
 class AttentionThinkingBlock(nn.Module):

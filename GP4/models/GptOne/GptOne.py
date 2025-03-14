@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch
 from torch.nn import functional as F
 
-from models.GptOne import AttentionThinkingBlock
+from models.GptOne.AttentionThinkingBlock import AttentionThinkingBlock
 class GptOne(nn.Module):
     def __init__(self, vocabulary_size, embedding_dimension_count, context_length, dropout, head_count, layer_count, device):
         super().__init__()
@@ -31,3 +31,13 @@ class GptOne(nn.Module):
             solution_tokens = solution_tokens.view(batch_size * token_count)
             loss = F.cross_entropy(logits, solution_tokens)
         return logits, loss
+    def generate(self, input_tokens, max_new_token_number, context_length):
+        for _ in range(max_new_token_number):
+            context_tokens = input_tokens[:, -context_length:]
+            logits, _ = self(context_tokens)
+            logits = logits[:, -1, :]
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            input_tokens = torch.cat((input_tokens, next_token), dim=1)
+        return input_tokens
+
