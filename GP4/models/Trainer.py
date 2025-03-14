@@ -1,8 +1,9 @@
 # --- Extract sub-batch ---
-import datetime
+from datetime import datetime
 import time
 
 import torch
+from datetime import timedelta
 
 from models.ModelHandler import save_checkpoint
 
@@ -151,7 +152,7 @@ def estimate_time(maximum_training_steps, starting_timer, step):
     minutes_by_step = current_training_duration / (step + 1) / 60
     remaining_steps = maximum_training_steps - step
     remaining_minutes = remaining_steps * minutes_by_step
-    predicted_end_time = datetime.now() + datetime.timedelta(minutes=remaining_minutes)
+    predicted_end_time = datetime.now() + timedelta(minutes=remaining_minutes)
     print("=" * 50)
     print(f"Step: {step}/{maximum_training_steps}")
     print(f"Elapsed Time: {current_training_duration / 60:.2f} minutes")

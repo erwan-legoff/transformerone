@@ -13,13 +13,13 @@ from models.GptOne.GptOne import GptOne
 if __name__ == '__main__':
     # Définition des hyperparamètres
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    tokenization_iteration = 10
+    tokenization_iteration = 1
     batch_size = 64 
     context_length = 500
     maximum_training_steps = 25000
     learning_rate = 2e-3
     head_count = 6
-    layer_count = 6
+    layer_count = 3
     dropout = 0.10
     embedding_dimension_count = 360 
     evaluation_interval = 800
@@ -36,7 +36,7 @@ if __name__ == '__main__':
     should_load = False
     model_to_load = "checkpoints/gpt_wiki_bigram_two_heads6_layers4_emb360_ctx500_drop0.1_19_loss21833"
     use_tokenizer = False
-    tokenizer_to_load ="GP4/tokenizers/tokenizer_iter2000_skip100_2025-03-06_02h.json"
+    tokenizer_to_load ="tokenizers/tokenizer_iter10_skip100_2025-03-14_18h.json"
     # Chargement des données
     training_text, eval_text = load_data('./wiki.train.tokens', './wiki.test.tokens')
     
