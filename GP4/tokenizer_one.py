@@ -45,9 +45,11 @@ def load_tokenizer(tokenizer_path):
         tokenizer_data = json.load(f)
     
     string_to_int = tokenizer_data["string_to_int"]
-    int_to_string = tokenizer_data["int_to_string"]
+    # We convert back keys to int
+    int_to_string = {int(key): value for key, value in tokenizer_data["int_to_string"].items()}
     
     print(f"Tokenizer loaded: {tokenizer_path}")
+
     return string_to_int, int_to_string
 
 def save_tokenizer(string_to_int, int_to_string, tokenization_iteration, max_char_skip, directory="tokenizers"):
@@ -80,7 +82,7 @@ def create_vocabularies_V2(training_text,
                         tokenization_iteration = 1000,
                         max_char_skip = 100):
     print('TOKENIZER ITERATIONS:')
-    print(tokenization_iteration)
+    print()
     char_occurences = count_char_occurences(training_text)
     sorted_chars = sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)
     top_chars = dict(sorted_chars)
@@ -94,8 +96,8 @@ def create_vocabularies_V2(training_text,
         print("Caractères manquants (non couverts par le vocabulaire) :", missing_chars)
     else:
         print("Tous les caractères du texte sont couverts par le vocabulaire initial.")
-        current_string_to_int = {string: idx for idx, string in enumerate(current_vocabulary)}
-        current_int_to_string = {idx: string for idx, string in enumerate(current_vocabulary)}
+    current_string_to_int = {string: idx for idx, string in enumerate(current_vocabulary)}
+    current_int_to_string = {idx: string for idx, string in enumerate(current_vocabulary)}
     
     tokenized_compressed_text = tokenize(training_text,current_string_to_int,max_gram_chars=1)
     # 1. **Count char occurrences**
