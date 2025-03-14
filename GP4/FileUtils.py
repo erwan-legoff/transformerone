@@ -1,15 +1,24 @@
 
+import os
+
+
 def save_dict_to_file(data, file_name):
+    os.makedirs(os.path.dirname(file_name), exist_ok=True)
     with open(file_name, 'w', encoding='utf-8') as f:
         for key, value in data.items():
             f.write(f"{key}: {value}\n")
 
 def save_list_to_file(data, file_name):
+    os.makedirs(os.path.dirname(file_name), exist_ok=True)
     with open(file_name, 'w', encoding='utf-8') as f:
         for item in data:
             f.write(f"{item}\n")
 
 def save_str_to_file(data, file_name):
+    dirs = os.path.dirname(file_name)
+    if(dirs != ''):
+        os.makedirs(dirs, exist_ok=True)
+        
     with open(file_name, 'w', encoding='utf-8') as f:
         f.write(data)
 
