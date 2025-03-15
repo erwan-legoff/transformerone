@@ -1,4 +1,5 @@
 from datetime import datetime
+import random
 import regex as re
 import json
 import os
@@ -154,7 +155,8 @@ def create_vocabularies_GPT4_like(training_text,
                         max_septegrams = 7000, max_octograms=7000, 
                         directory="vocabulary_v2",
                         tokenization_iterations = 1000,
-                        max_char_skip = 100):
+                        max_char_skip = 0,
+                        max_chunk_skip = 100):
     print('TOKENIZER ITERATIONS:')
     print(tokenization_iterations)
     char_occurences = count_char_occurences(training_text)
@@ -182,8 +184,17 @@ def create_vocabularies_GPT4_like(training_text,
         
         # we will accumulate bigram occurences for each chunk
         total_bigram_occurences ={}
-        for tokenized_chunk in tokenized_chunks:
-            total_bigram_occurences = count_n_gram_occurences_optimized(tokenized_chunk, gram_size=2,max_char_skip=0,stats_cumulator=total_bigram_occurences)
+        chunk_index = 0
+        tokenized_chunk_count = len(tokenized_chunks)
+        while chunk_index < tokenized_chunk_count:
+            tokenized_chunk = tokenized_chunks[chunk_index]
+            total_bigram_occurences = count_n_gram_occurences_optimized(tokenized_chunk, gram_size=2, max_char_skip=0, stats_cumulator=total_bigram_occurences)
+            
+            remaining_chunks = tokenized_chunk_count - chunk_index
+            current_max_skip = min(max_chunk_skip,remaining_chunks)
+            
+            next_offset = random.randint(1,1+current_max_skip)
+            chunk_index += next_offset
             
         print("bigram_occurences_end")
 
