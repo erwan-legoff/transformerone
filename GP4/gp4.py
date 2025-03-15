@@ -5,7 +5,7 @@ from FileUtils import load_data, write_first_2000_chars_to_file
 from Stats import write_first_1000_tokens_to_file
 from models.ModelHandler import generate_and_print_text, generate_print_and_save_text, load_checkpoint, save_checkpoint
 from models.Trainer import calculate_mean_losses, calculate_short_mean_losses, get_batch, train
-from tokenizer_one import create_vocabularies_V2, detokenize, load_tokenizer, prepare_tokenized_data, tokenize
+from tokenizer_one import create_vocabularies_V2, create_vocabularies_GPT4_like, detokenize, load_tokenizer, prepare_tokenized_data, tokenize
 from models.GptOne.GptOne import GptOne
 
 
@@ -14,7 +14,7 @@ if __name__ == '__main__':
     # Définition des hyperparamètres
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     final_testing_sentence = "2+2="
-    tokenization_iteration = 1000
+    tokenization_iterations = 1000
     batch_size = 64 
     context_length = 250
     maximum_training_steps = 12000
@@ -34,9 +34,9 @@ if __name__ == '__main__':
     checkpoint_interval = 10000
     time_estimation_interval = 200
     should_train = True
-    should_load = True
+    should_load = False
     model_to_load = "checkpoints/gpt_wiki_bigram_two_heads6_layers3_emb360_ctx250_drop0.1_12_loss27604.pt"
-    use_tokenizer = True
+    use_tokenizer = False
     tokenizer_to_load ="tokenizers/tokenizer_iter1000_skip100_2025-03-14_22h.json"
     # Chargement des données
     training_text, eval_text = load_data('./wiki.train.tokens', './wiki.test.tokens')
@@ -45,7 +45,7 @@ if __name__ == '__main__':
         string_to_int, int_to_string = load_tokenizer(tokenizer_to_load)
         vocabulary_size = len(string_to_int)
     else:
-        vocabulary_size, string_to_int, int_to_string, tokenizer_path = create_vocabularies_V2(training_text, tokenization_iteration=tokenization_iteration,max_char_skip=100)
+        vocabulary_size, string_to_int, int_to_string, tokenizer_path = create_vocabularies_GPT4_like(training_text, tokenization_iterations=tokenization_iterations,max_char_skip=100)
     
     print(f"Taille string_to_int chargée : {len(string_to_int)}")
     print(f"Taille int_to_string chargée : {len(int_to_string)}")
@@ -93,7 +93,7 @@ if __name__ == '__main__':
         'context_length': context_length,
         'dropout': dropout
     }
-    if(should_load):
+    if(should_load and use_tokenizer):
         model = load_checkpoint(model=model,checkpoint_path=model_to_load,device=device)
     # Entraînement
     if(should_train):

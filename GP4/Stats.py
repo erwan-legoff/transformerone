@@ -18,8 +18,8 @@ import random
 import unicodedata
 
 from FileUtils import save_str_to_file
-def count_n_gram_occurences_optimized(training_data, gram_size, max_char_skip = 10):
-    bigram_occurences = {}
+def count_n_gram_occurences_optimized(training_data, gram_size, max_char_skip = 10, stats_cumulator = {}):
+    bigram_occurences = stats_cumulator
     c = 0
     while c < len(training_data) - gram_size + 1:
         sub = training_data[c : c + gram_size]
@@ -34,7 +34,10 @@ def count_n_gram_occurences_optimized(training_data, gram_size, max_char_skip = 
         remaining_chars = current_max_c - c
         current_max_skip = min(max_char_skip,remaining_chars)
         # We want to skip randomly to echantillonized our data
-        next_offset = random.randint(1,1+current_max_skip)
+        if(max_char_skip >0):
+            next_offset = random.randint(1,1+current_max_skip)
+        else:
+            next_offset = 1
         c += next_offset
     return bigram_occurences
 import re

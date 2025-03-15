@@ -1,11 +1,12 @@
 from datetime import datetime
+import regex as re
 import json
 import os
 import unicodedata
 from FileUtils import *
 import torch
 from Stats import count_char_occurences, count_n_gram_occurences_optimized, count_n_gram_occurences_optimized_no_ponctuation
-
+GPT4_SPLIT_PATTERN = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
 def to_decomposed_unicode(text: str) -> str:
     return unicodedata.normalize('NFD', text)
 
@@ -144,6 +145,90 @@ def create_vocabularies_V2(training_text,
     string_to_int = {string: idx for idx, string in enumerate(full_vocabulary)}
     int_to_string = {idx: string for idx, string in enumerate(full_vocabulary)}
     tokenizer_path = save_tokenizer(string_to_int, int_to_string, tokenization_iteration, max_char_skip)
+    return vocabulary_size, string_to_int, int_to_string, tokenizer_path
+
+def create_vocabularies_GPT4_like(training_text, 
+                        max_bigrams=538, 
+                        max_trigrams=1000, max_quadgrams=1500, 
+                        max_pentagrams=2173, max_sextegrams=7000,
+                        max_septegrams = 7000, max_octograms=7000, 
+                        directory="vocabulary_v2",
+                        tokenization_iterations = 1000,
+                        max_char_skip = 100):
+    print('TOKENIZER ITERATIONS:')
+    print(tokenization_iterations)
+    char_occurences = count_char_occurences(training_text)
+    sorted_chars = sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)
+    top_chars = dict(sorted_chars)
+    current_vocabulary = list(top_chars.keys())
+    # Juste après avoir construit top_chars et current_vocabulary:
+    all_chars_in_text = set(training_text)  # l'ensemble de tous les caractères distincts
+    dict_chars = set(current_vocabulary)    # l'ensemble des chars que vous avez retenus
+
+    missing_chars = all_chars_in_text - dict_chars
+    if len(missing_chars) > 0:
+        print("Caractères manquants (non couverts par le vocabulaire) :", missing_chars)
+    else:
+        print("Tous les caractères du texte sont couverts par le vocabulaire initial.")
+    current_string_to_int = {string: idx for idx, string in enumerate(current_vocabulary)}
+    current_int_to_string = {idx: string for idx, string in enumerate(current_vocabulary)}
+    regex_compiled_pattern = re.compile(GPT4_SPLIT_PATTERN)
+    text_chunks = re.findall(regex_compiled_pattern, training_text)
+    tokenized_chunks =list(tokenize(chunk,current_string_to_int, max_gram_chars=1) for chunk in text_chunks)
+    # 1. we begin the vocabulary creation
+    for i in range(tokenization_iterations):
+        print(i)
+        print("bigram_occurences_start")
+        
+        # we will accumulate bigram occurences for each chunk
+        total_bigram_occurences ={}
+        for tokenized_chunk in tokenized_chunks:
+            total_bigram_occurences = count_n_gram_occurences_optimized(tokenized_chunk, gram_size=2,max_char_skip=0,stats_cumulator=total_bigram_occurences)
+            
+        print("bigram_occurences_end")
+
+        sorted_bigrams = sorted(total_bigram_occurences.items(), key=lambda item: item[1], reverse=True)
+
+        
+
+        # 3. **Select the top N most frequent**
+        if not sorted_bigrams:
+            print("Aucun bigram trouvé, fin du processus.")
+            break  # Stopper si plus de bigrams à fusionner
+        
+        current_top_bigram_ints = sorted_bigrams[0][0]
+        current_top_bigram_strings = current_int_to_string.get(current_top_bigram_ints[0], "") + \
+                                     current_int_to_string.get(current_top_bigram_ints[1], "")
+
+
+        current_vocabulary.append(current_top_bigram_strings)
+
+        
+        new_token_id = len(current_string_to_int)
+        current_string_to_int[current_top_bigram_strings] = new_token_id
+        current_int_to_string[new_token_id] = current_top_bigram_strings
+        print('merge_in_place_start')
+        print('token')
+        print(current_top_bigram_strings)
+        
+        # We then remplace the more frequent bigram by the new token for every chunk
+        tokenized_chunks = [merge_in_place(tokenized_chunk,current_top_bigram_ints,new_token_id) for tokenized_chunk in tokenized_chunks]
+        print('merge_in_place_end')
+        
+
+
+
+    # 5. **Create the combined vocabulary**
+    full_vocabulary = current_vocabulary
+        
+    # 6. **Save the full vocabulary**
+    save_list_to_file(full_vocabulary, os.path.join(directory, 'full_vocabulary.txt'))
+
+    # 7. **Create mappings for tokenization**
+    vocabulary_size = len(full_vocabulary)
+    string_to_int = {string: idx for idx, string in enumerate(full_vocabulary)}
+    int_to_string = {idx: string for idx, string in enumerate(full_vocabulary)}
+    tokenizer_path = save_tokenizer(string_to_int, int_to_string, tokenization_iterations, max_char_skip)
     return vocabulary_size, string_to_int, int_to_string, tokenizer_path
 
 def merge_in_place(token_sequence, bigram, new_token):
