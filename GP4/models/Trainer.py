@@ -45,20 +45,6 @@ def calculate_short_mean_losses(model, training_data, evaluation_data, context_l
     model.train()
     return mean_losses
 
-# --- Model classes ---
-
-
-
-
-
-
-
-
-# --- Checkpoint saving and loading ---
-
-
-
-
 # --- Boucle d'entraînement ---
 def perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement,
                             model, training_data, evaluation_data, context_length, batch_size,
