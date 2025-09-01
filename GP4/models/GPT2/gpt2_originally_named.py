@@ -97,21 +97,27 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(config.n_embd)
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-    def forward(self, token_indices):
+        self.transformer.wte.weight = self.lm_head.weight  # type: ignore
+    def forward(self, token_indices, targets = None):
         BATCH_SIZE, TIME_SIZE = token_indices.size()
         assert TIME_SIZE <= self.config.block_size, f"Cannot forward sequence of length {TIME_SIZE}, block size is {self.config.block_size}"
         pos = torch.arange(0, TIME_SIZE, dtype=torch.long, device=token_indices.device)
-        position_embeddings = self.transformer.wpe(pos)
-        token_embeddings = self.transformer.wte(token_indices)
+        position_embeddings = self.transformer.wpe(pos) # type: ignore
+        token_embeddings = self.transformer.wte(token_indices) # type: ignore
         x = token_embeddings + position_embeddings
         # On se propage dans le transformer
-        for block in self.transformer.h:
+        for block in self.transformer.h: # type: ignore
             x = block(x)
 
         # On se propage dans le dernier layer de normalization
-        x = self.transformer.ln_f(x)
+        x = self.transformer.ln_f(x) # type: ignore
         logits = self.lm_head(x)
-        return logits
+
+        loss = None 
+        if(targets is not None):
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+
+        return logits, loss
 
 
 
@@ -170,13 +176,89 @@ class GPT(nn.Module):
 num_return_sequences = 5
 max_length = 30
 
-model= GPT.from_pretrained('gpt2')
-model.eval()
-model.to('cuda')
-print("Ca plante pas youhouu")
+# Autodetect device
+device = "cpu"
+if torch.cuda.is_available():
+    device = "cuda"
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = "mps"
+
+# hard coded
+# device = "cpu"
+print(f"using device {device}")
+
+
+
 
 import tiktoken
+
+class DataLoaderLite:
+    def __init__(self, B, T) -> None:
+        self.B = B 
+        self.T = T 
+        # get a data batch
+        with open('./wiki.test.tokens', 'r') as file:
+           text = file.read()
+        tokens = encoder.encode(text=text)
+        self.tokens = torch.tensor(tokens)
+        self.current_position = 0
+        print(f"loaded {len(self.tokens)} tokens")
+        print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
+
+        
+
+    def next_batch(self):
+        BATCH_SIZE, TIME_SIZE = self.B, self.T
+        buffer = self.tokens[self.current_position : self.current_position+BATCH_SIZE*TIME_SIZE+1] # type: ignore
+        inputs = buffer[:-1].view(BATCH_SIZE, TIME_SIZE)
+        solutions = buffer[1:].view(BATCH_SIZE, TIME_SIZE)
+        self.current_position += BATCH_SIZE * TIME_SIZE
+
+        if self.current_position + (BATCH_SIZE * TIME_SIZE + 1) > len(self.tokens):
+            self.current_position = 0
+
+        return inputs, solutions
+
 encoder = tiktoken.get_encoding('gpt2')
+
+
+train_loader = DataLoaderLite(B=4, T=35)
+
+
+# model= GPT.from_pretrained('gpt2')
+model = GPT(GPTConfig())  # Random init
+model.eval()
+model.to(device)
+print("Ca plante pas youhouu")
+# logits, loss = model(inputs, solutions)
+# print(loss)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50):
+    optimizer.zero_grad()
+    inputs, solutions = train_loader.next_batch()
+    inputs, solutions = inputs.to(device), solutions.to(device)
+    logits, loss = model(inputs,solutions)
+    loss.backward()
+    optimizer.step()
+    print(f"step {i}, loss: {loss.item()}")
+
+
+import sys; sys.exit(0)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 tokens = encoder.encode("I like")
 tokens = torch.tensor(tokens, dtype=torch.long)
 tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
