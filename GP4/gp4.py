@@ -29,14 +29,14 @@ if __name__ == '__main__':
     short_eval_iters = 5
     max_new_token_number = 20000
     max_new_token_number_preview = 100
-    model_file_name = "gpt_wiki_bpe_one"
-    generate_interval = 1600
+    model_file_name = "gpt_wiki_bpe_one_lang_tool_01-09-25"
+    generate_interval = 100
     checkpoint_interval = 10000
     time_estimation_interval = 200
     should_train = True
     should_load = False
     model_to_load = "checkpoints/gpt_wiki_bigram_two_heads6_layers3_emb360_ctx250_drop0.1_12_loss27604.pt"
-    use_tokenizer = False
+    use_tokenizer = True
     tokenizer_to_load ="tokenizers/tokenizer_iter1000_skip100_2025-03-14_22h.json"
     # Chargement des données
     training_text, eval_text = load_data('./wiki.train.tokens', './wiki.test.tokens')
