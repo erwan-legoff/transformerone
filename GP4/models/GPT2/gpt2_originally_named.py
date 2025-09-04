@@ -35,7 +35,7 @@ class CausalSelfAttention(nn.Module):
         # attention = attention.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
         # attention = F.softmax(attention, dim=-1)
         output_tokens = F.scaled_dot_product_attention(
-        query, key, value, attn_mask=None, is_causal=True
+        query, key, value, is_causal=True
       )
         output_tokens = output_tokens.transpose(1,2).contiguous().view(B,T,C)
         output_tokens = self.c_proj(output_tokens)
@@ -244,7 +244,7 @@ torch.set_float32_matmul_precision('medium')
 
 
 # model= GPT.from_pretrained('gpt2')
-model = GPT(GPTConfig())  # Random init
+model = GPT(GPTConfig(vocab_size=50304))  # Random init
 model.eval()
 model.to(device)
 model = torch.compile(model, fullgraph=True)
@@ -254,7 +254,7 @@ print("Ca plante pas youhouu")
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 times = []
 toks = []
-for i in range(100):
+for i in range(50):
     t0 = time.time()
     optimizer.zero_grad()
     inputs, solutions = train_loader.next_batch()
