@@ -17,10 +17,10 @@ class CausalSelfAttention(nn.Module):
 
         self.n_head = config.n_head
         self.n_embd = config.n_embd 
-        ones = torch.ones(config.block_size, config.block_size)
-        mask = torch.tril(ones).view(1,1, config.block_size, config.block_size)
-        # Registering mask
-        self.register_buffer("bias", mask)
+        # ones = torch.ones(config.block_size, config.block_size)
+        # mask = torch.tril(ones).view(1,1, config.block_size, config.block_size)
+        # # Registering mask
+        # self.register_buffer("bias", mask)
 
     def forward(self, input_tokens):
         B,T,C = input_tokens.size()
@@ -31,10 +31,12 @@ class CausalSelfAttention(nn.Module):
         query = query.view(B, T, self.n_head, C // self.n_head).transpose(1,2)
         value = value.view(B, T, self.n_head, C // self.n_head).transpose(1,2)
 
-        attention = (query @ key.transpose(-2, -1)) * (1.0 / math.sqrt(key.size(-1)))
-        attention = attention.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-        attention = F.softmax(attention, dim=-1)
-        output_tokens = attention @ value
+        # attention = (query @ key.transpose(-2, -1)) * (1.0 / math.sqrt(key.size(-1)))
+        # attention = attention.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+        # attention = F.softmax(attention, dim=-1)
+        output_tokens = F.scaled_dot_product_attention(
+        query, key, value, attn_mask=None, is_causal=True
+      )
         output_tokens = output_tokens.transpose(1,2).contiguous().view(B,T,C)
         output_tokens = self.c_proj(output_tokens)
         return output_tokens
@@ -45,7 +47,7 @@ class MLP(nn.Module):
         super().__init__()
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
         # non_linearity
-        self.gelu = nn.GELU()
+        self.gelu = nn.GELU(approximate='tanh')
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
         self.c_proj.NANO_SCALE_INIT = 1
 
@@ -236,7 +238,7 @@ class DataLoaderLite:
 encoder = tiktoken.get_encoding('gpt2')
 
 
-train_loader = DataLoaderLite(B=8, T=1024)
+train_loader = DataLoaderLite(B=12, T=1024)
 # Changing tensor float32 matmul precision
 torch.set_float32_matmul_precision('medium')
 
@@ -245,10 +247,13 @@ torch.set_float32_matmul_precision('medium')
 model = GPT(GPTConfig())  # Random init
 model.eval()
 model.to(device)
+model = torch.compile(model, fullgraph=True)
 print("Ca plante pas youhouu")
 # logits, loss = model(inputs, solutions)
 # print(loss)
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+times = []
+toks = []
 for i in range(100):
     t0 = time.time()
     optimizer.zero_grad()
@@ -262,12 +267,23 @@ for i in range(100):
     t1=time.time()
     dt = (t1-t0)*1000
     tokens_per_second = (train_loader.B * train_loader.T) / (t1-t0)
+    # accumulate
+    times.append(dt)
+    toks.append(tokens_per_second)
     print(f"step {i}, loss: {loss.item()}, time:{dt:.2f}ms, tokens/s: {tokens_per_second}")
     # 32bit 2700 ms  3200 token/s
     # Medium 2100 ms  3800 token/s avec ventilo 3900 token/s
     # bf16bit 1900 ms  4200 token/s
+    # bf16 + SDPA 196 ms et donc 40000 token/s
+    # bf16 + SDPA + torch.compile 160 ms et donc 50000 token/s
+    # bf16 + SDPA + torch.compile avec reduce-overhead 175 ms et donc 46000 token/s
+    # bf16 + SDPA + torch.compile + batch 8 196.69 ms et donc 50545.46 token/s
+    # bf16 + SDPA + torch.compile + batch 10 249.71 ms et donc 51778.83 token/s
+    # bf16 + SDPA + torch.compile + batch 12 379.53 ms et donc 49970.47
+    # bf16 + SDPA + torch.compile + GELU approximate + batch 12 341.06 ms 52703.25 
 
-
+print(f"\nMoyenne temps/step: {sum(times)/len(times):.2f} ms")
+print(f"Moyenne tokens/s:   {sum(toks)/len(toks):.2f}")
 
 import sys; sys.exit(0)
 
