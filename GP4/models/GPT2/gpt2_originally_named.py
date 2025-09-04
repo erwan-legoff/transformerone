@@ -13,6 +13,7 @@ class CausalSelfAttention(nn.Module):
         self.c_attn = nn.Linear(config.n_embd, 3*config.n_embd)
         # c_projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.NANO_SCALE_INIT = 1
 
         self.n_head = config.n_head
         self.n_embd = config.n_embd 
@@ -46,6 +47,7 @@ class MLP(nn.Module):
         # non_linearity
         self.gelu = nn.GELU()
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_proj.NANO_SCALE_INIT = 1
 
     def forward(self, input_tokens):
         input_tokens = self.c_fc(input_tokens)
@@ -98,6 +100,18 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.transformer.wte.weight = self.lm_head.weight  # type: ignore
+        self.apply(self.init_weights)
+
+    def init_weights(self, module):
+        std = 0.02
+        if hasattr(module, 'NANO_SCALE_INIT'):
+            std *= (2*self.config.n_layer)** -0.5
+        if(isinstance(module, nn.Linear)):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if(module.bias is not None):
+               torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)   
     def forward(self, token_indices, targets = None):
         BATCH_SIZE, TIME_SIZE = token_indices.size()
         assert TIME_SIZE <= self.config.block_size, f"Cannot forward sequence of length {TIME_SIZE}, block size is {self.config.block_size}"
@@ -175,7 +189,7 @@ class GPT(nn.Module):
 
 num_return_sequences = 5
 max_length = 30
-
+import time
 # Autodetect device
 device = "cpu"
 if torch.cuda.is_available():
@@ -222,7 +236,9 @@ class DataLoaderLite:
 encoder = tiktoken.get_encoding('gpt2')
 
 
-train_loader = DataLoaderLite(B=4, T=35)
+train_loader = DataLoaderLite(B=8, T=1024)
+# Changing tensor float32 matmul precision
+torch.set_float32_matmul_precision('medium')
 
 
 # model= GPT.from_pretrained('gpt2')
@@ -233,14 +249,24 @@ print("Ca plante pas youhouu")
 # logits, loss = model(inputs, solutions)
 # print(loss)
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for i in range(50):
+for i in range(100):
+    t0 = time.time()
     optimizer.zero_grad()
     inputs, solutions = train_loader.next_batch()
     inputs, solutions = inputs.to(device), solutions.to(device)
-    logits, loss = model(inputs,solutions)
+    with torch.autocast(device_type=device, dtype=torch.bfloat16 if device == "cuda" else torch.float16):
+        logits, loss = model(inputs,solutions)
     loss.backward()
     optimizer.step()
-    print(f"step {i}, loss: {loss.item()}")
+    torch.cuda.synchronize()
+    t1=time.time()
+    dt = (t1-t0)*1000
+    tokens_per_second = (train_loader.B * train_loader.T) / (t1-t0)
+    print(f"step {i}, loss: {loss.item()}, time:{dt:.2f}ms, tokens/s: {tokens_per_second}")
+    # 32bit 2700 ms  3200 token/s
+    # Medium 2100 ms  3800 token/s avec ventilo 3900 token/s
+    # bf16bit 1900 ms  4200 token/s
+
 
 
 import sys; sys.exit(0)
@@ -264,8 +290,9 @@ tokens = torch.tensor(tokens, dtype=torch.long)
 tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
 token_sentence = tokens.to('cuda')
 
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
 while token_sentence.size(1) < max_length:
     # On traverse le model pour avoir les logits
     with torch.no_grad():
