@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import math
+import inspect
 
 import torch
 import torch.nn as nn
@@ -188,6 +189,24 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
 
         return model
+    
+    def configure_optimizers(self, weight_decay, learning_rate, device):
+        # start with all parameters (that require grad)
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        #create optimizer groups
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2 and 'bias' not in n]
+        no_decay_params = [p for n, p in param_dict.items() if p.dim() < 2 or 'bias' in n]
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': no_decay_params, 'weight_decay': 0.0}
+        ]
+        print(f"creating optimizer with {len(decay_params)} decay and {len(no_decay_params)} no_decay parameters")
+        fused_avalaible = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_avalaible and device == 'cuda'
+        print(f"using fused AdamW: {use_fused} (fused available: {fused_avalaible}, device: {device})")
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
+        return optimizer
 
 num_return_sequences = 5
 max_length = 30
@@ -251,10 +270,29 @@ model = torch.compile(model, fullgraph=True)
 print("Ca plante pas youhouu")
 # logits, loss = model(inputs, solutions)
 # print(loss)
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+# optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
+optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device= device)
 times = []
 toks = []
-for i in range(50):
+
+max_lr = 6e-4
+min_lr = max_lr * 0.1
+warmup_steps = 10
+max_steps = 50
+def get_lr(step):
+    # 1. linear warmup for the first 100 steps
+    if step < warmup_steps:
+        return max_lr * step / warmup_steps
+    # 2. if it > lr_decary_iters down to min_lr
+    if step > max_steps:
+        return min_lr
+    # 3à in between, cosine decay down to min_lr
+    decay_ratio = (step - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
+
+for step in range(max_steps):
     t0 = time.time()
     optimizer.zero_grad()
     inputs, solutions = train_loader.next_batch()
@@ -262,6 +300,10 @@ for i in range(50):
     with torch.autocast(device_type=device, dtype=torch.bfloat16 if device == "cuda" else torch.float16):
         logits, loss = model(inputs,solutions)
     loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    lr = get_lr(step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
     optimizer.step()
     torch.cuda.synchronize()
     t1=time.time()
@@ -270,7 +312,7 @@ for i in range(50):
     # accumulate
     times.append(dt)
     toks.append(tokens_per_second)
-    print(f"step {i}, loss: {loss.item()}, time:{dt:.2f}ms, tokens/s: {tokens_per_second}")
+    print(f"step {step}| loss: {loss.item():.1f} | norm: {norm:.2f} | lr {lr:.4e} time:{dt:.0f}ms, tokens/s: {tokens_per_second:.0f}")
     # 32bit 2700 ms  3200 token/s
     # Medium 2100 ms  3800 token/s avec ventilo 3900 token/s
     # bf16bit 1900 ms  4200 token/s
@@ -326,7 +368,7 @@ while token_sentence.size(1) < max_length:
 
         token_sentence = torch.cat((token_sentence,next_token_id), dim=1)
 
-for i in range(num_return_sequences):
-    tokens = token_sentence[i, :max_length].tolist()
+for step in range(num_return_sequences):
+    tokens = token_sentence[step, :max_length].tolist()
     decoded = encoder.decode(tokens)
     print(">", decoded)
