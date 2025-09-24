@@ -307,16 +307,16 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 # model= GPT.from_pretrained('gpt2')
 model = GPT(GPTConfig(vocab_size=50304))  # Random init
-model.eval()
 model.to(device)
 model = torch.compile(model, fullgraph=True)
 if ddp:
     model = DDP(model, device_ids=[local_rank])
+raw_model = model.module if ddp else model # the underlying model
 print("Ca plante pas youhouu")
 # logits, loss = model(inputs, solutions)
 # print(loss)
 # optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
-optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device= device) # type: ignore
+optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device= device) # type: ignore
 times = []
 toks = []
 
