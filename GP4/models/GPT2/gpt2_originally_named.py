@@ -300,15 +300,14 @@ class DataLoaderLite:
 
         if master_process:
             print(f"found {len(self.shards)} data shards in {data_root}")
-
-        self.current_shard = 0
-        # load the first shard
-        self.tokens = load_tokens(self.shards[self.current_shard])
-        # start position depends on process rank so different GPUs read different offsets
-        self.current_position = self.B * self.T * process_rank
+        self.reset()
 
         
-
+    def reset(self):
+        self.current_shard = 0
+        self.tokens = load_tokens(self.shards[self.current_shard])
+        # start position depends on process rank so different GPUs read different offsets
+        self.current_position = self.B * self.T * self.process_rank
         
 
     def next_batch(self):
@@ -330,6 +329,7 @@ class DataLoaderLite:
 
 
 train_loader = DataLoaderLite(B=12, T=1024, process_rank=rank, gpu_count=gpu_count, split='train')
+eval_loader = DataLoaderLite(B=12, T=1024, process_rank=rank, gpu_count=gpu_count, split='val')
 # Changing tensor float32 matmul precision
 torch.set_float32_matmul_precision('medium')
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -368,6 +368,26 @@ def get_lr(step):
 
 for step in range(max_steps):
     t0 = time.time()
+    # once in a while, we evaluate the model
+    if step % 100 == 0:
+        model.eval()
+        eval_loader.reset()
+        with torch.no_grad():
+            eval_loss_accumulated = 0.0
+            eval_loss_steps = 20
+            for _ in range(eval_loss_steps):
+                inputs, solutions = eval_loader.next_batch()
+                inputs, solutions = inputs.to(device), solutions.to(device)
+                with torch.autocast(device_type=device, dtype=torch.bfloat16 if device == "cuda" else torch.float16):
+                    logits, loss = model(inputs,solutions)
+                loss = loss / eval_loss_steps
+                eval_loss_accumulated += loss.detach()
+        if ddp:
+            dist.all_reduce(eval_loss_accumulated, op=dist.ReduceOp.AVG)
+        if master_process:
+            print(f"VALIDATION LOSS: {eval_loss_accumulated:.1f}")
+    # training loop
+    model.train()
     optimizer.zero_grad()
     loss_accumulated = 0.0
     for micro_step in range(grad_accumulation_steps):
