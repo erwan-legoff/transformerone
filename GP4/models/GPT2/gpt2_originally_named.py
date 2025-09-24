@@ -267,21 +267,47 @@ print(f"grad_accumulation_steps: {grad_accumulation_steps}")
 
 
 import tiktoken
+import numpy as np
+
+def load_tokens(filename):
+    np_tokens = np.load(filename)
+    pytorch_tokens = torch.tensor(np_tokens, dtype=torch.long)
+    return pytorch_tokens
 
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank, gpu_count) -> None:
+    def __init__(self, B, T, process_rank, gpu_count, split: str = 'train') -> None:
         self.B = B 
         self.T = T 
-        # get a data batch
-        with open('./wiki.test.tokens', 'r') as file:
-           text = file.read()
-        tokens = encoder.encode(text=text)
-        self.tokens = torch.tensor(tokens)
-        self.current_position = self.B * self.T * process_rank
+        
+        
         self.gpu_count = gpu_count
         self.process_rank = process_rank
-        print(f"loaded {len(self.tokens)} tokens")
-        print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
+
+        assert split in {'train', 'val'}
+
+        # locate data directory relative to this file so the script can be run from repo root
+        data_root = os.path.join(os.path.dirname(__file__), "edu_fineweb10B")
+        if not os.path.isdir(data_root):
+            # fallback to a simple relative name if that path doesn't exist
+            data_root = "edu_fineweb10B"
+
+        shards = [f for f in os.listdir(data_root) if f.endswith('.npy')]
+        shards = sorted(shards)
+        assert len(shards) > 0, "no data shards found"
+
+        # store full paths to shards
+        self.shards = [os.path.join(data_root, s) for s in shards]
+
+        if master_process:
+            print(f"found {len(self.shards)} data shards in {data_root}")
+
+        self.current_shard = 0
+        # load the first shard
+        self.tokens = load_tokens(self.shards[self.current_shard])
+        # start position depends on process rank so different GPUs read different offsets
+        self.current_position = self.B * self.T * process_rank
+
+        
 
         
 
@@ -291,16 +317,19 @@ class DataLoaderLite:
         inputs = buffer[:-1].view(BATCH_SIZE, TIME_SIZE)
         solutions = buffer[1:].view(BATCH_SIZE, TIME_SIZE)
         self.current_position += BATCH_SIZE * TIME_SIZE * self.gpu_count
-
+        # if loading the next batch would be out of bounds, advance to next shard
         if self.current_position + (BATCH_SIZE * TIME_SIZE * self.gpu_count + 1) > len(self.tokens):
-            self.current_position = BATCH_SIZE * TIME_SIZE * self.process_rank
+            self.current_shard = (self.current_shard + 1) % len(self.shards)
+            self.tokens = load_tokens(self.shards[self.current_shard])
+            # reset position for this process/gpu
+            self.current_position = self.B * self.T * self.process_rank
 
         return inputs, solutions
 
-encoder = tiktoken.get_encoding('gpt2')
 
 
-train_loader = DataLoaderLite(B=12, T=1024, process_rank=rank, gpu_count=gpu_count)
+
+train_loader = DataLoaderLite(B=12, T=1024, process_rank=rank, gpu_count=gpu_count, split='train')
 # Changing tensor float32 matmul precision
 torch.set_float32_matmul_precision('medium')
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -320,10 +349,10 @@ optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4,
 times = []
 toks = []
 
-max_lr = 6e-4
+max_lr = 6e-4*3
 min_lr = max_lr * 0.1
-warmup_steps = 10
-max_steps = 50
+warmup_steps = 200
+max_steps = 19073
 def get_lr(step):
     # 1. linear warmup for the first 100 steps
     if step < warmup_steps:
@@ -373,6 +402,10 @@ for step in range(max_steps):
         m = math.floor((time_left - h * 3600) / 60)
         s = math.floor(time_left - h * 3600 - m * 60)
         print(f"estimated time left for {step_left} steps: {h}h {m}m {s}s")
+        # calcule le jour et l'heure de fin
+        date = time.localtime(time.time() + time_left)
+        print(f"estimated end at {date.tm_mday}/{date.tm_mon} {date.tm_hour}:{date.tm_min}")
+    # Pour info
     # 32bit 2700 ms  3200 token/s
     # Medium 2100 ms  3800 token/s avec ventilo 3900 token/s
     # bf16bit 1900 ms  4200 token/s
