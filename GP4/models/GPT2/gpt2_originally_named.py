@@ -211,6 +211,7 @@ class GPT(nn.Module):
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
         return optimizer
 
+import torch.distributed as dist
 from torch.distributed import init_process_group, destroy_process_group
 import os
 ddp = int(os.environ.get("RANK", -1)) != -1
@@ -350,6 +351,8 @@ for step in range(max_steps):
         if(ddp):
             model.require_backward_grad_sync = (micro_step == grad_accumulation_steps - 1)
         loss.backward()
+    if(ddp):
+        dist.all_reduce(loss_accumulated, op=dist.ReduceOp.AVG)
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     lr = get_lr(step)
     for param_group in optimizer.param_groups:
@@ -358,11 +361,18 @@ for step in range(max_steps):
     torch.cuda.synchronize()
     t1=time.time()
     dt = (t1-t0)*1000
-    tokens_per_second = (train_loader.B * train_loader.T * grad_accumulation_steps) / (t1-t0)
+    tokens_per_second = (train_loader.B * train_loader.T * grad_accumulation_steps * gpu_count) / (t1-t0)
     # accumulate
     times.append(dt)
     toks.append(tokens_per_second)
-    print(f"step {step}| loss: {loss_accumulated:.1f} | norm: {norm:.2f} | lr {lr:.4e} time:{dt:.0f}ms, tokens/s: {tokens_per_second:.0f}")
+    if master_process:
+        print(f"step {step}| loss: {loss_accumulated:.1f} | norm: {norm:.2f} | learning {lr:.4e} time:{dt:.0f}ms, tokens/s: {tokens_per_second:.0f}")
+        step_left = max_steps - (step + 1)
+        time_left = step_left * (sum(times)/len(times)) / 1000
+        h = math.floor(time_left / 3600)
+        m = math.floor((time_left - h * 3600) / 60)
+        s = math.floor(time_left - h * 3600 - m * 60)
+        print(f"estimated time left for {step_left} steps: {h}h {m}m {s}s")
     # 32bit 2700 ms  3200 token/s
     # Medium 2100 ms  3800 token/s avec ventilo 3900 token/s
     # bf16bit 1900 ms  4200 token/s
