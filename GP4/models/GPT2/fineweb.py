@@ -42,8 +42,7 @@ def write_datafile(filename, tokens_np):
     np.save(filename, tokens_np)
 
 # tokenize all documents and write output shards, each of shard_size tokens (last shard has remainder)
-cpu_count = os.cpu_count() or 1
-nprocs = max(1, cpu_count // 2)
+nprocs = max(1, os.cpu_count()//2)
 with mp.Pool(nprocs) as pool:
     shard_index = 0
     # preallocate buffer to hold current shard
@@ -67,8 +66,6 @@ with mp.Pool(nprocs) as pool:
             filename = os.path.join(DATA_CACHE_DIR, f"edufineweb_{split}_{shard_index:06d}")
             # split the document into whatever fits in this shard; the remainder goes to next one
             remainder = shard_size - token_count
-            if progress_bar is None:
-                progress_bar = tqdm(total=shard_size, unit="tokens", desc=f"Shard {shard_index}")
             progress_bar.update(remainder)
             all_tokens_np[token_count:token_count+remainder] = tokens[:remainder]
             write_datafile(filename, all_tokens_np)
