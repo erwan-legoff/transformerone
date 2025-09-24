@@ -348,7 +348,7 @@ print("Ca plante pas youhouu")
 optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device= device) # type: ignore
 times = []
 toks = []
-
+encoder = tiktoken.get_encoding("gpt2")
 max_lr = 6e-4*3
 min_lr = max_lr * 0.1
 warmup_steps = 200
@@ -366,7 +366,44 @@ def get_lr(step):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     return min_lr + coeff * (max_lr - min_lr)
 
+def generateText(rank, device, model, encoder):
+    generation_step = 0
+    num_return_sequences = 4
+    max_length = 50
+    model.eval()
+    tokens = encoder.encode("JavaScript is a")
+    tokens = torch.tensor(tokens, dtype=torch.long)
+    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+    token_sentence = tokens.to(device)
+
+    sample_random_generator = torch.Generator(device=device)
+    sample_random_generator.manual_seed(42 + rank)
+    while token_sentence.size(1) < max_length:
+            # On traverse le model pour avoir les logits
+        with torch.no_grad():
+            logits, loss = model(token_sentence)
+
+            logits = logits[:,-1,:]
+
+            probabilities = F.softmax(logits, dim=-1)
+
+            top_k_probabilities , top_k_indices = torch.topk(probabilities, 50, dim=-1)
+
+            random_number = torch.multinomial(top_k_probabilities, 1)
+                
+            next_token_id = torch.gather(top_k_indices, -1, random_number)
+
+            token_sentence = torch.cat((token_sentence,next_token_id), dim=1)
+
+    for generation_step in range(num_return_sequences):
+        tokens = token_sentence[generation_step, :max_length].tolist()
+        decoded = encoder.decode(tokens)
+        print("<----SAMPLING -----> ")
+        print(decoded)
+        print()
+
 for step in range(max_steps):
+    print()
     t0 = time.time()
     # once in a while, we evaluate the model
     if step % 100 == 0:
@@ -386,10 +423,20 @@ for step in range(max_steps):
             dist.all_reduce(eval_loss_accumulated, op=dist.ReduceOp.AVG)
         if master_process:
             print(f"VALIDATION LOSS: {eval_loss_accumulated:.1f}")
+
+
+            # Once in a while, on génère du texte
+    
+    if step % 1 == 0 and master_process:
+        generateText(rank, device, model, encoder)
+            
+            
     # training loop
     model.train()
     optimizer.zero_grad()
     loss_accumulated = 0.0
+
+    
     for micro_step in range(grad_accumulation_steps):
         inputs, solutions = train_loader.next_batch()
         inputs, solutions = inputs.to(device), solutions.to(device)
@@ -440,7 +487,8 @@ for step in range(max_steps):
 print(f"\nMoyenne temps/step: {sum(times)/len(times):.2f} ms")
 print(f"Moyenne tokens/s:   {sum(toks)/len(toks):.2f}")
 
-import sys; sys.exit(0)
+if ddp:
+    destroy_process_group()
 
 
 
@@ -456,32 +504,3 @@ import sys; sys.exit(0)
 
 
 
-tokens = encoder.encode("I like")
-tokens = torch.tensor(tokens, dtype=torch.long)
-tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-token_sentence = tokens.to('cuda')
-
-torch.manual_seed(1337)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(1337)
-while token_sentence.size(1) < max_length:
-    # On traverse le model pour avoir les logits
-    with torch.no_grad():
-        logits = model(token_sentence)
-
-        logits = logits[:,-1,:]
-
-        probabilities = F.softmax(logits, dim=-1)
-
-        top_k_probabilities , top_k_indices = torch.topk(probabilities, 50, dim=-1)
-
-        random_number = torch.multinomial(top_k_probabilities, 1)
-        
-        next_token_id = torch.gather(top_k_indices, -1, random_number)
-
-        token_sentence = torch.cat((token_sentence,next_token_id), dim=1)
-
-for step in range(num_return_sequences):
-    tokens = token_sentence[step, :max_length].tolist()
-    decoded = encoder.decode(tokens)
-    print(">", decoded)
