@@ -23,3 +23,4 @@ config.json
 secrets.env
 wiki.test.tokens
 wiki.train.tokens
+edu_fineweb10B/
