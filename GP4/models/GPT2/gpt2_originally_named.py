@@ -63,10 +63,6 @@ class CausalSelfAttention(nn.Module):
 
         self.n_head = config.n_head
         self.n_embd = config.n_embd 
-        # ones = torch.ones(config.block_size, config.block_size)
-        # mask = torch.tril(ones).view(1,1, config.block_size, config.block_size)
-        # # Registering mask
-        # self.register_buffer("bias", mask)
 
     def forward(self, input_tokens):
         B,T,C = input_tokens.size()
@@ -265,6 +261,7 @@ TRAIN_LOADER_BATCH_SIZE = 12
 EVAL_INTERVAL = 100
 HELLOSWAG_EVAL_INTERVAL = 100
 GENERATE_INTERVAL = 50
+CHECKPOINT_INTERVAL = 100
 TEXT_PROMPT = "Java is a"
 NUM_GENERATION_SEQUENCES = 4
 MAX_GENERATION_LENGTH = 50
@@ -334,7 +331,8 @@ class DataLoaderLite:
             # fallback to a simple relative name if that path doesn't exist
             data_root = "edu_fineweb10B"
 
-        shards = [f for f in os.listdir(data_root) if f.endswith('.npy')]
+        shards = os.listdir(data_root)
+        shards = [s for s in shards if split in s]
         shards = sorted(shards)
         assert len(shards) > 0, "no data shards found"
 
@@ -396,21 +394,22 @@ def get_raw_model(model):
 times = []
 toks = []
 encoder = tiktoken.get_encoding("gpt2")
-max_lr = 6e-4 * 3
-min_lr = max_lr * 0.1
+max_learning_rate = 6e-4 * 3
+min_learning_rate = max_learning_rate / 30
 warmup_steps = 200
 max_steps = 19073
 
 
-def get_lr(step):
+def get_learning_rate(step):
     if step < warmup_steps:
-        return max_lr * step / warmup_steps
+        return max_learning_rate * step / warmup_steps
     if step > max_steps:
-        return min_lr
+        return min_learning_rate
     decay_ratio = (step - warmup_steps) / (max_steps - warmup_steps)
     assert 0 <= decay_ratio <= 1
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-    return min_lr + coeff * (max_lr - min_lr)
+
+    return min_learning_rate + coeff * (max_learning_rate - min_learning_rate)
 
 
 def generate_text(model):
@@ -490,7 +489,7 @@ def perform_training_iteration(model, optimizer):
 
 
 def update_learning_rate(optimizer, step):
-    lr = get_lr(step)
+    lr = get_learning_rate(step)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
     return lr
@@ -504,15 +503,16 @@ def synchronize_device():
 def log_step(step, loss_accumulated, norm, lr, dt, tokens_per_second):
     if not master_process:
         return
-    print(f"step {step}| loss: {loss_accumulated:.1f} | norm: {norm:.2f} | learning {lr:.4e} time:{dt:.0f}ms, tokens/s: {tokens_per_second:.0f}")
+    print(f"step {step} | loss: {loss_accumulated:.1f} | norm: {norm:.2f} | learning {lr:.4e} | time:{dt:.0f}ms | {tokens_per_second:.0f}tokens/s")
     step_left = max_steps - (step + 1)
     time_left = step_left * (sum(times) / len(times)) / 1000
     h = math.floor(time_left / 3600)
     m = math.floor((time_left - h * 3600) / 60)
     s = math.floor(time_left - h * 3600 - m * 60)
-    print(f"estimated time left for {step_left} steps: {h}h {m}m {s}s")
+    
     date = time.localtime(time.time() + time_left)
-    print(f"estimated end at {date.tm_mday}/{date.tm_mon} {date.tm_hour}:{date.tm_min}")
+    print(f"finish in... steps: {step_left} | time: {h}h {m}m {s}s | date: {date.tm_mday}/{date.tm_mon} {date.tm_hour}:{date.tm_min}")
+
     with open(log_file, "a") as f:
         f.write(f"{step},{loss_accumulated:.4f}\n")
 
@@ -562,6 +562,19 @@ def run_training_loop(model, optimizer):
 
         loss_accumulated, norm = perform_training_iteration(model, optimizer)
         lr = update_learning_rate(optimizer, step)
+        if step > 0 and step % CHECKPOINT_INTERVAL == 0 and master_process:
+            checkpoint_path = os.path.join(log_dir, f"gpt2_checkpoint_step{step}.pt")
+            print(f"saving checkpoint to {checkpoint_path}")
+            raw_model = get_raw_model(model)
+            checkpoint = {
+                'model': raw_model.state_dict(),
+                'config': raw_model.config,
+                'step': step,
+                'rng_state': torch.get_rng_state(),
+                'cuda_rng_state': torch.cuda.get_rng_state_all(),
+                'val_loss': loss_accumulated,
+            }
+            torch.save(checkpoint, checkpoint_path)
         optimizer.step()
         synchronize_device()
         t1 = time.time()
