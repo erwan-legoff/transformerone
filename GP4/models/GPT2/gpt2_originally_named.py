@@ -5,10 +5,52 @@ import inspect
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from hellaswag import render_example, iterate_examples
+import os
 # Simple launch :
 # python gpt2_originally_named.py
 # DDp launch :
 # torchrun --nproc_per_node=2 gpt2_originally_named.py
+#Helper function for HellaSwag evaluation
+# takes tokens, mask, and logits, returns index of the completion with lowest loss
+def get_most_likely_completion(tokens, mask, logits):
+    shift_logits = (logits[..., :-1, :]).contiguous()
+    shift_tokens = (tokens[..., 1:]).contiguous()
+    flat_shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+    flat_shift_tokens = shift_tokens.view(-1)
+    shift_losses = F.cross_entropy(flat_shift_logits, flat_shift_tokens, reduction='none')
+    shift_losses = shift_losses.view(tokens.size(0), -1)
+    # now get the average loss just for the completion region (where mask == 1), in each row
+    shift_mask = (mask[..., 1:]).contiguous() # we must shift mask, so we start at the last prompt token
+    masked_shift_losses = shift_losses * shift_mask
+    # sum and divide by the number of 1s in the mask
+    sum_loss = masked_shift_losses.sum(dim=1)
+    avg_loss = sum_loss / shift_mask.sum(dim=1)
+    # now we have a loss for each of the 4 completions
+    # the one with the lowest loss should be the most likely
+    prediction_normalized = avg_loss.argmin().item()
+    return prediction_normalized
+
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "gpt2_log.txt")
+# open for writing to clear it
+with open(log_file, "w") as f:
+    f.write("")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -221,7 +263,9 @@ B = 8
 T = 1024
 TRAIN_LOADER_BATCH_SIZE = 12
 EVAL_INTERVAL = 100
-TEXT_PROMPT = "JavaScript is a"
+HELLOSWAG_EVAL_INTERVAL = 100
+GENERATE_INTERVAL = 50
+TEXT_PROMPT = "Java is a"
 NUM_GENERATION_SEQUENCES = 4
 MAX_GENERATION_LENGTH = 50
 TOP_K = 50
@@ -380,7 +424,8 @@ def generate_text(model):
     sample_random_generator.manual_seed(42 + rank)
     while token_sentence.size(1) < MAX_GENERATION_LENGTH:
         with torch.no_grad():
-            logits, _ = model(token_sentence)
+            with torch.autocast(device_type=device, dtype=torch.bfloat16 if device == "cuda" else torch.float16):
+                logits, _ = model(token_sentence)
             logits = logits[:, -1, :]
             probabilities = F.softmax(logits, dim=-1)
             top_k_probabilities, top_k_indices = torch.topk(probabilities, TOP_K, dim=-1)
@@ -391,7 +436,7 @@ def generate_text(model):
     for generation_step in range(NUM_GENERATION_SEQUENCES):
         tokens = token_sentence[generation_step, :MAX_GENERATION_LENGTH].tolist()
         decoded = encoder.decode(tokens)
-        print("<----SAMPLING -----> ")
+        print("----- -----")
         print(decoded)
         print()
 
@@ -413,6 +458,8 @@ def run_validation(model):
         dist.all_reduce(eval_loss_accumulated, op=dist.ReduceOp.AVG)
     if master_process:
         print(f"VALIDATION LOSS: {eval_loss_accumulated:.1f}")
+
+
 
 
 def maybe_generate_text(model):
@@ -466,6 +513,8 @@ def log_step(step, loss_accumulated, norm, lr, dt, tokens_per_second):
     print(f"estimated time left for {step_left} steps: {h}h {m}m {s}s")
     date = time.localtime(time.time() + time_left)
     print(f"estimated end at {date.tm_mday}/{date.tm_mon} {date.tm_hour}:{date.tm_min}")
+    with open(log_file, "a") as f:
+        f.write(f"{step},{loss_accumulated:.4f}\n")
 
 
 def run_training_loop(model, optimizer):
@@ -473,10 +522,44 @@ def run_training_loop(model, optimizer):
     toks.clear()
     for step in range(max_steps):
         print()
+        is_last_step = step == (max_steps - 1)
         t0 = time.time()
-        if step % EVAL_INTERVAL == 0:
+        if step % EVAL_INTERVAL == 0 or is_last_step:
             run_validation(model)
-        maybe_generate_text(model)
+        if step % (GENERATE_INTERVAL) == 0 or is_last_step:
+            maybe_generate_text(model)
+        if step % HELLOSWAG_EVAL_INTERVAL == 0 or is_last_step:
+            num_correct_norm = 0
+            num_total = 0
+            for i, example in enumerate(iterate_examples("val")):
+                if i % gpu_count != rank:
+                    continue
+                # render example into tokens and labels
+                _, tokens, mask, label = render_example(example)
+                tokens = tokens.to(device)
+                mask = mask.to(device)
+                # get the logits
+                with torch.no_grad():
+                    with torch.autocast(device_type=device, dtype=torch.bfloat16 if device == "cuda" else torch.float16):
+                        logits, loss = model(tokens)
+                    pred_norm = get_most_likely_completion(tokens, mask, logits)
+                num_total += 1
+                num_correct_norm += int(pred_norm == label)
+            # reduce the stats across all processes
+            if ddp:
+                num_total = torch.tensor(num_total, dtype=torch.long,device=device)
+                num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long,device=device)
+                dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
+                dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
+                num_total = num_total.item()
+                num_correct_norm = num_correct_norm.item()
+            accuracy_norm = num_correct_norm / num_total
+            if master_process:
+                print(f"HellaSwag accuracy norm: {num_correct_norm}/{num_total}={accuracy_norm:.2f}")
+                with open(log_file, "a") as f:
+                    f.write(f"{step},{accuracy_norm:.4f}\n")
+
+
         loss_accumulated, norm = perform_training_iteration(model, optimizer)
         lr = update_learning_rate(optimizer, step)
         optimizer.step()
