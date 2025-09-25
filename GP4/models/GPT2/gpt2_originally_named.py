@@ -412,6 +412,22 @@ def get_learning_rate(step):
     return min_learning_rate + coeff * (max_learning_rate - min_learning_rate)
 
 
+def autocast_settings(device: str):
+    """Return (device_type, dtype) suitable for torch.autocast given a device string.
+
+    device may be 'cuda', 'cuda:0', 'cpu', or 'mps'."""
+    if isinstance(device, str) and device.startswith("cuda"):
+        return "cuda", torch.bfloat16
+    elif device == "cpu":
+        # CPU supports bfloat16 on modern PyTorch builds
+        return "cpu", torch.bfloat16
+    elif device == "mps":
+        # MPS doesn't support bfloat16 reliably yet, use float16
+        return "mps", torch.float16
+    else:
+        raise ValueError(f"Unsupported device for autocast: {device}")
+
+
 def generate_text(model):
     model.eval()
     tokens = encoder.encode(TEXT_PROMPT)
@@ -423,7 +439,8 @@ def generate_text(model):
     sample_random_generator.manual_seed(42 + rank)
     while token_sentence.size(1) < MAX_GENERATION_LENGTH:
         with torch.no_grad():
-            with torch.autocast(device_type=device, dtype=torch.bfloat16 if device == "cuda" else torch.float16):
+            device_type, autocast_dtype = autocast_settings(device)
+            with torch.autocast(device_type=device_type, dtype=autocast_dtype):
                 logits, _ = model(token_sentence)
             logits = logits[:, -1, :]
             probabilities = F.softmax(logits, dim=-1)
@@ -449,7 +466,8 @@ def run_validation(model):
         for _ in range(eval_loss_steps):
             inputs, solutions = eval_loader.next_batch()
             inputs, solutions = inputs.to(device), solutions.to(device)
-            with torch.autocast(device_type=device, dtype=torch.bfloat16 if device == "cuda" else torch.float16):
+            device_type, autocast_dtype = autocast_settings(device)
+            with torch.autocast(device_type=device_type, dtype=autocast_dtype):
                 _, loss = model(inputs, solutions)
             loss = loss / eval_loss_steps
             eval_loss_accumulated += loss.detach()
@@ -475,7 +493,8 @@ def perform_training_iteration(model, optimizer):
     for micro_step in range(grad_accumulation_steps):
         inputs, solutions = train_loader.next_batch()
         inputs, solutions = inputs.to(device), solutions.to(device)
-        with torch.autocast(device_type=device, dtype=torch.bfloat16 if device == "cuda" else torch.float16):
+        device_type, autocast_dtype = autocast_settings(device)
+        with torch.autocast(device_type=device_type, dtype=autocast_dtype):
             _, loss = model(inputs, solutions)
         loss = loss / grad_accumulation_steps
         loss_accumulated += loss.detach()
@@ -511,7 +530,7 @@ def log_step(step, loss_accumulated, norm, lr, dt, tokens_per_second):
     s = math.floor(time_left - h * 3600 - m * 60)
     
     date = time.localtime(time.time() + time_left)
-    print(f"finish in... steps: {step_left} | time: {h}h {m}m {s}s | date: {date.tm_mday}/{date.tm_mon} {date.tm_hour}:{date.tm_min}")
+    print(f"Remaining estimates | steps: {step_left} | time: {h}h {m}m {s}s | date: {date.tm_mday}/{date.tm_mon} {date.tm_hour}:{date.tm_min}")
 
     with open(log_file, "a") as f:
         f.write(f"{step},{loss_accumulated:.4f}\n")
@@ -540,7 +559,8 @@ def run_training_loop(model, optimizer):
                 mask = mask.to(device)
                 # get the logits
                 with torch.no_grad():
-                    with torch.autocast(device_type=device, dtype=torch.bfloat16 if device == "cuda" else torch.float16):
+                    device_type, autocast_dtype = autocast_settings(device)
+                    with torch.autocast(device_type=device_type, dtype=autocast_dtype):
                         logits, loss = model(tokens)
                     pred_norm = get_most_likely_completion(tokens, mask, logits)
                 num_total += 1
