@@ -214,60 +214,59 @@ class GPT(nn.Module):
 import torch.distributed as dist
 from torch.distributed import init_process_group, destroy_process_group
 import os
-ddp = int(os.environ.get("RANK", -1)) != -1
-if ddp:
-    assert torch.cuda.is_available(), "DDP only works with cuda"
-    init_process_group(backend="nccl")
-    rank = int(os.environ["RANK"])
-    gpu_count = int(os.environ["WORLD_SIZE"])
-    local_rank = int(os.environ["LOCAL_RANK"])
-    device = f"cuda:{local_rank}"
-    torch.cuda.set_device(device)
-    print(f"DDP mode on. rank: {rank}, world_size: {gpu_count}, device: {device}")
-    master_process = rank == 0
-else:
-    rank = 0
-    local_rank = 0
-    gpu_count = 1
-    master_process = True
-    device = "cpu"
-    if torch.cuda.is_available():
-        device = "cuda"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = "mps"
-    print(f"single process mode, device: {device}")
-
-
-num_return_sequences = 5
-max_length = 30
 import time
-# Autodetect device
-# device = "cpu"
-# if torch.cuda.is_available():
-#     device = "cuda"
-# elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-#     device = "mps"
 
-# hard coded
-# device = "cpu"
-print(f"using device {device}")
-
-total_batch_size = 524288 # 512K tokens per batch
-# On va faire du batch de 12 sequences de 1024 tokens
-# ce qui fait 12*1024 = 12288 tokens par batch
-B=8
-T=1024
-assert total_batch_size % (B*T*gpu_count) == 0, "total_batch_size must be a multiple of B*T*gpu_count"
-grad_accumulation_steps = total_batch_size // (B*T*gpu_count)
-if master_process:
-    print(f"grad accumulation steps: {grad_accumulation_steps} ")
-    print(f"calculating {total_batch_size} tokens per batch with B={B}, T={T}")
-# grad_accumulation_steps
-print(f"grad_accumulation_steps: {grad_accumulation_steps}")
-
+TOTAL_BATCH_SIZE = 524288  # 512K tokens per batch
+B = 8
+T = 1024
+TRAIN_LOADER_BATCH_SIZE = 12
+EVAL_INTERVAL = 100
+TEXT_PROMPT = "JavaScript is a"
+NUM_GENERATION_SEQUENCES = 4
+MAX_GENERATION_LENGTH = 50
+TOP_K = 50
+GRAD_CLIP = 1.0
 
 import tiktoken
 import numpy as np
+
+
+def initialize_distributed_mode():
+    global ddp, rank, gpu_count, local_rank, master_process, device
+
+    ddp = int(os.environ.get("RANK", -1)) != -1
+    if ddp:
+        assert torch.cuda.is_available(), "DDP only works with cuda"
+        init_process_group(backend="nccl")
+        rank = int(os.environ["RANK"])
+        gpu_count = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ["LOCAL_RANK"])
+        device = f"cuda:{local_rank}"
+        torch.cuda.set_device(device)
+        print(f"DDP mode on. rank: {rank}, world_size: {gpu_count}, device: {device}")
+        master_process = rank == 0
+    else:
+        rank = 0
+        local_rank = 0
+        gpu_count = 1
+        master_process = True
+        device = "cpu"
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = "mps"
+        print(f"single process mode, device: {device}")
+
+
+def configure_gradient_accumulation():
+    global grad_accumulation_steps
+
+    assert TOTAL_BATCH_SIZE % (B * T * gpu_count) == 0, "total_batch_size must be a multiple of B*T*gpu_count"
+    grad_accumulation_steps = TOTAL_BATCH_SIZE // (B * T * gpu_count)
+    if master_process:
+        print(f"grad accumulation steps: {grad_accumulation_steps} ")
+        print(f"calculating {TOTAL_BATCH_SIZE} tokens per batch with B={B}, T={T}")
+    print(f"grad_accumulation_steps: {grad_accumulation_steps}")
 
 def load_tokens(filename):
     np_tokens = np.load(filename)
@@ -326,169 +325,192 @@ class DataLoaderLite:
         return inputs, solutions
 
 
-
-
-train_loader = DataLoaderLite(B=12, T=1024, process_rank=rank, gpu_count=gpu_count, split='train')
-eval_loader = DataLoaderLite(B=12, T=1024, process_rank=rank, gpu_count=gpu_count, split='val')
-# Changing tensor float32 matmul precision
-torch.set_float32_matmul_precision('medium')
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-# model= GPT.from_pretrained('gpt2')
-model = GPT(GPTConfig(vocab_size=50304))  # Random init
-model.to(device)
-model = torch.compile(model, fullgraph=True)
-if ddp:
-    model = DDP(model, device_ids=[local_rank])
-raw_model = model.module if ddp else model # the underlying model
-print("Ca plante pas youhouu")
-# logits, loss = model(inputs, solutions)
-# print(loss)
-# optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
-optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device= device) # type: ignore
+
+def create_dataloaders():
+    global train_loader, eval_loader
+
+    train_loader = DataLoaderLite(B=TRAIN_LOADER_BATCH_SIZE, T=T, process_rank=rank, gpu_count=gpu_count, split='train')
+    eval_loader = DataLoaderLite(B=TRAIN_LOADER_BATCH_SIZE, T=T, process_rank=rank, gpu_count=gpu_count, split='val')
+
+
+def build_model():
+    model = GPT(GPTConfig(vocab_size=50304))  # Random init
+    model.to(device)
+    model = torch.compile(model, fullgraph=True)
+    if ddp:
+        model = DDP(model, device_ids=[local_rank])
+    print("Ca plante pas youhouu")
+    return model
+
+
+def get_raw_model(model):
+    return model.module if ddp else model
+
+
 times = []
 toks = []
 encoder = tiktoken.get_encoding("gpt2")
-max_lr = 6e-4*3
+max_lr = 6e-4 * 3
 min_lr = max_lr * 0.1
 warmup_steps = 200
 max_steps = 19073
+
+
 def get_lr(step):
-    # 1. linear warmup for the first 100 steps
     if step < warmup_steps:
         return max_lr * step / warmup_steps
-    # 2. if it > lr_decary_iters down to min_lr
     if step > max_steps:
         return min_lr
-    # 3à in between, cosine decay down to min_lr
     decay_ratio = (step - warmup_steps) / (max_steps - warmup_steps)
     assert 0 <= decay_ratio <= 1
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     return min_lr + coeff * (max_lr - min_lr)
 
-def generateText(rank, device, model, encoder):
-    generation_step = 0
-    num_return_sequences = 4
-    max_length = 50
+
+def generate_text(model):
     model.eval()
-    tokens = encoder.encode("JavaScript is a")
+    tokens = encoder.encode(TEXT_PROMPT)
     tokens = torch.tensor(tokens, dtype=torch.long)
-    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+    tokens = tokens.unsqueeze(0).repeat(NUM_GENERATION_SEQUENCES, 1)
     token_sentence = tokens.to(device)
 
     sample_random_generator = torch.Generator(device=device)
     sample_random_generator.manual_seed(42 + rank)
-    while token_sentence.size(1) < max_length:
-            # On traverse le model pour avoir les logits
+    while token_sentence.size(1) < MAX_GENERATION_LENGTH:
         with torch.no_grad():
-            logits, loss = model(token_sentence)
-
-            logits = logits[:,-1,:]
-
+            logits, _ = model(token_sentence)
+            logits = logits[:, -1, :]
             probabilities = F.softmax(logits, dim=-1)
-
-            top_k_probabilities , top_k_indices = torch.topk(probabilities, 50, dim=-1)
-
-            random_number = torch.multinomial(top_k_probabilities, 1)
-                
+            top_k_probabilities, top_k_indices = torch.topk(probabilities, TOP_K, dim=-1)
+            random_number = torch.multinomial(top_k_probabilities, 1, generator=sample_random_generator)
             next_token_id = torch.gather(top_k_indices, -1, random_number)
+            token_sentence = torch.cat((token_sentence, next_token_id), dim=1)
 
-            token_sentence = torch.cat((token_sentence,next_token_id), dim=1)
-
-    for generation_step in range(num_return_sequences):
-        tokens = token_sentence[generation_step, :max_length].tolist()
+    for generation_step in range(NUM_GENERATION_SEQUENCES):
+        tokens = token_sentence[generation_step, :MAX_GENERATION_LENGTH].tolist()
         decoded = encoder.decode(tokens)
         print("<----SAMPLING -----> ")
         print(decoded)
         print()
 
-for step in range(max_steps):
-    print()
-    t0 = time.time()
-    # once in a while, we evaluate the model
-    if step % 100 == 0:
-        model.eval()
-        eval_loader.reset()
-        with torch.no_grad():
-            eval_loss_accumulated = 0.0
-            eval_loss_steps = 20
-            for _ in range(eval_loss_steps):
-                inputs, solutions = eval_loader.next_batch()
-                inputs, solutions = inputs.to(device), solutions.to(device)
-                with torch.autocast(device_type=device, dtype=torch.bfloat16 if device == "cuda" else torch.float16):
-                    logits, loss = model(inputs,solutions)
-                loss = loss / eval_loss_steps
-                eval_loss_accumulated += loss.detach()
-        if ddp:
-            dist.all_reduce(eval_loss_accumulated, op=dist.ReduceOp.AVG)
-        if master_process:
-            print(f"VALIDATION LOSS: {eval_loss_accumulated:.1f}")
+
+def run_validation(model):
+    model.eval()
+    eval_loader.reset()
+    with torch.no_grad():
+        eval_loss_accumulated = 0.0
+        eval_loss_steps = 20
+        for _ in range(eval_loss_steps):
+            inputs, solutions = eval_loader.next_batch()
+            inputs, solutions = inputs.to(device), solutions.to(device)
+            with torch.autocast(device_type=device, dtype=torch.bfloat16 if device == "cuda" else torch.float16):
+                _, loss = model(inputs, solutions)
+            loss = loss / eval_loss_steps
+            eval_loss_accumulated += loss.detach()
+    if ddp:
+        dist.all_reduce(eval_loss_accumulated, op=dist.ReduceOp.AVG)
+    if master_process:
+        print(f"VALIDATION LOSS: {eval_loss_accumulated:.1f}")
 
 
-            # Once in a while, on génère du texte
-    
-    if step % 1 == 0 and master_process:
-        generateText(rank, device, model, encoder)
-            
-            
-    # training loop
+def maybe_generate_text(model):
+    if not master_process:
+        return
+    generate_text(model)
+
+
+def perform_training_iteration(model, optimizer):
     model.train()
     optimizer.zero_grad()
     loss_accumulated = 0.0
 
-    
     for micro_step in range(grad_accumulation_steps):
         inputs, solutions = train_loader.next_batch()
         inputs, solutions = inputs.to(device), solutions.to(device)
         with torch.autocast(device_type=device, dtype=torch.bfloat16 if device == "cuda" else torch.float16):
-            logits, loss = model(inputs,solutions)
-        loss = loss / grad_accumulation_steps # You must scale down the loss because it is accumulated
+            _, loss = model(inputs, solutions)
+        loss = loss / grad_accumulation_steps
         loss_accumulated += loss.detach()
-        if(ddp):
+        if ddp:
             model.require_backward_grad_sync = (micro_step == grad_accumulation_steps - 1)
         loss.backward()
-    if(ddp):
+    if ddp:
         dist.all_reduce(loss_accumulated, op=dist.ReduceOp.AVG)
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+    return loss_accumulated, norm
+
+
+def update_learning_rate(optimizer, step):
     lr = get_lr(step)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-    optimizer.step()
-    torch.cuda.synchronize()
-    t1=time.time()
-    dt = (t1-t0)*1000
-    tokens_per_second = (train_loader.B * train_loader.T * grad_accumulation_steps * gpu_count) / (t1-t0)
-    # accumulate
-    times.append(dt)
-    toks.append(tokens_per_second)
-    if master_process:
-        print(f"step {step}| loss: {loss_accumulated:.1f} | norm: {norm:.2f} | learning {lr:.4e} time:{dt:.0f}ms, tokens/s: {tokens_per_second:.0f}")
-        step_left = max_steps - (step + 1)
-        time_left = step_left * (sum(times)/len(times)) / 1000
-        h = math.floor(time_left / 3600)
-        m = math.floor((time_left - h * 3600) / 60)
-        s = math.floor(time_left - h * 3600 - m * 60)
-        print(f"estimated time left for {step_left} steps: {h}h {m}m {s}s")
-        # calcule le jour et l'heure de fin
-        date = time.localtime(time.time() + time_left)
-        print(f"estimated end at {date.tm_mday}/{date.tm_mon} {date.tm_hour}:{date.tm_min}")
-    # Pour info
-    # 32bit 2700 ms  3200 token/s
-    # Medium 2100 ms  3800 token/s avec ventilo 3900 token/s
-    # bf16bit 1900 ms  4200 token/s
-    # bf16 + SDPA 196 ms et donc 40000 token/s
-    # bf16 + SDPA + torch.compile 160 ms et donc 50000 token/s
-    # bf16 + SDPA + torch.compile avec reduce-overhead 175 ms et donc 46000 token/s
-    # bf16 + SDPA + torch.compile + batch 8 196.69 ms et donc 50545.46 token/s
-    # bf16 + SDPA + torch.compile + batch 10 249.71 ms et donc 51778.83 token/s
-    # bf16 + SDPA + torch.compile + batch 12 379.53 ms et donc 49970.47
-    # bf16 + SDPA + torch.compile + GELU approximate + batch 12 341.06 ms 52703.25 
+    return lr
 
-print(f"\nMoyenne temps/step: {sum(times)/len(times):.2f} ms")
-print(f"Moyenne tokens/s:   {sum(toks)/len(toks):.2f}")
 
-if ddp:
-    destroy_process_group()
+def synchronize_device():
+    if isinstance(device, str) and device.startswith("cuda"):
+        torch.cuda.synchronize()
+
+
+def log_step(step, loss_accumulated, norm, lr, dt, tokens_per_second):
+    if not master_process:
+        return
+    print(f"step {step}| loss: {loss_accumulated:.1f} | norm: {norm:.2f} | learning {lr:.4e} time:{dt:.0f}ms, tokens/s: {tokens_per_second:.0f}")
+    step_left = max_steps - (step + 1)
+    time_left = step_left * (sum(times) / len(times)) / 1000
+    h = math.floor(time_left / 3600)
+    m = math.floor((time_left - h * 3600) / 60)
+    s = math.floor(time_left - h * 3600 - m * 60)
+    print(f"estimated time left for {step_left} steps: {h}h {m}m {s}s")
+    date = time.localtime(time.time() + time_left)
+    print(f"estimated end at {date.tm_mday}/{date.tm_mon} {date.tm_hour}:{date.tm_min}")
+
+
+def run_training_loop(model, optimizer):
+    times.clear()
+    toks.clear()
+    for step in range(max_steps):
+        print()
+        t0 = time.time()
+        if step % EVAL_INTERVAL == 0:
+            run_validation(model)
+        maybe_generate_text(model)
+        loss_accumulated, norm = perform_training_iteration(model, optimizer)
+        lr = update_learning_rate(optimizer, step)
+        optimizer.step()
+        synchronize_device()
+        t1 = time.time()
+        dt = (t1 - t0) * 1000
+        tokens_per_second = (train_loader.B * train_loader.T * grad_accumulation_steps * gpu_count) / (t1 - t0)
+        times.append(dt)
+        toks.append(tokens_per_second)
+        log_step(step, loss_accumulated, norm, lr, dt, tokens_per_second)
+
+
+def finalize_training():
+    print(f"\nMoyenne temps/step: {sum(times)/len(times):.2f} ms")
+    print(f"Moyenne tokens/s:   {sum(toks)/len(toks):.2f}")
+    if ddp:
+        destroy_process_group()
+
+
+def main():
+    initialize_distributed_mode()
+    print(f"using device {device}")
+    configure_gradient_accumulation()
+    create_dataloaders()
+    torch.set_float32_matmul_precision('medium')
+    model = build_model()
+    raw_model = get_raw_model(model)
+    optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)  # type: ignore
+    run_training_loop(model, optimizer)
+    finalize_training()
+
+
+if __name__ == "__main__":
+    main()
 
 
 
