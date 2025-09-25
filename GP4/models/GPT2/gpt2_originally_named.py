@@ -244,7 +244,7 @@ class GPT(nn.Module):
         ]
         print(f"creating optimizer with {len(decay_params)} decay and {len(no_decay_params)} no_decay parameters")
         fused_avalaible = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_avalaible and device == 'cuda'
+        use_fused = fused_avalaible and isinstance(device, str) and device.startswith('cuda')
         print(f"using fused AdamW: {use_fused} (fused available: {fused_avalaible}, device: {device})")
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
         return optimizer
@@ -257,7 +257,7 @@ import time
 TOTAL_BATCH_SIZE = 524288  # 512K tokens per batch
 B = 8
 T = 1024
-TRAIN_LOADER_BATCH_SIZE = 12
+TRAIN_LOADER_BATCH_SIZE = 8  # actual batch size per GPU
 EVAL_INTERVAL = 100
 HELLOSWAG_EVAL_INTERVAL = 100
 GENERATE_INTERVAL = 50
@@ -270,6 +270,7 @@ GRAD_CLIP = 1.0
 
 import tiktoken
 import numpy as np
+import random
 
 
 def initialize_distributed_mode():
@@ -299,18 +300,22 @@ def initialize_distributed_mode():
         print(f"single process mode, device: {device}")
 
 
-def configure_gradient_accumulation():
+def configure_gradient_accumulation(train_loader):
     global grad_accumulation_steps
 
-    assert TOTAL_BATCH_SIZE % (B * T * gpu_count) == 0, "total_batch_size must be a multiple of B*T*gpu_count"
-    grad_accumulation_steps = TOTAL_BATCH_SIZE // (B * T * gpu_count)
+    # compute grad accumulation steps from actual dataloader batch size to avoid mismatch
+    batch_B = train_loader.B
+    assert TOTAL_BATCH_SIZE % (batch_B * T * gpu_count) == 0, "TOTAL_BATCH_SIZE must be a multiple of batch_B*T*gpu_count"
+    grad_accumulation_steps = TOTAL_BATCH_SIZE // (batch_B * T * gpu_count)
     if master_process:
         print(f"grad accumulation steps: {grad_accumulation_steps} ")
-        print(f"calculating {TOTAL_BATCH_SIZE} tokens per batch with B={B}, T={T}")
+        print(f"calculating {TOTAL_BATCH_SIZE} tokens per batch with B={batch_B}, T={T}")
     print(f"grad_accumulation_steps: {grad_accumulation_steps}")
 
 def load_tokens(filename):
     np_tokens = np.load(filename)
+    # downcast to int32 on load to reduce memory; still safe to convert to torch.long
+    np_tokens = np_tokens.astype(np.int32)
     pytorch_tokens = torch.tensor(np_tokens, dtype=torch.long)
     return pytorch_tokens
 
@@ -385,6 +390,15 @@ def build_model():
         model = DDP(model, device_ids=[local_rank])
     print("Ca plante pas youhouu")
     return model
+
+
+def set_seeds(seed: int = 1337):
+    """Set random seeds for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def get_raw_model(model):
@@ -591,7 +605,7 @@ def run_training_loop(model, optimizer):
                 'config': raw_model.config,
                 'step': step,
                 'rng_state': torch.get_rng_state(),
-                'cuda_rng_state': torch.cuda.get_rng_state_all(),
+                'cuda_rng_state': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
                 'val_loss': loss_accumulated,
             }
             torch.save(checkpoint, checkpoint_path)
@@ -615,8 +629,9 @@ def finalize_training():
 def main():
     initialize_distributed_mode()
     print(f"using device {device}")
-    configure_gradient_accumulation()
+    set_seeds(1337)
     create_dataloaders()
+    configure_gradient_accumulation(train_loader)
     torch.set_float32_matmul_precision('medium')
     model = build_model()
     raw_model = get_raw_model(model)
