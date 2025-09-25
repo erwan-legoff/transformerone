@@ -595,6 +595,7 @@ def run_training_loop(model, optimizer):
                 'rng_state': torch.get_rng_state(),
                 'cuda_rng_state': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
                 'val_loss': loss_accumulated,
+                'optimizer': optimizer.state_dict(),
             }
             torch.save(checkpoint, checkpoint_path)
         optimizer.step()
