@@ -538,10 +538,10 @@ def log_step(step, loss_accumulated, norm, lr, dt, tokens_per_second):
         f.write(f"{step},{loss_accumulated:.4f}\n")
 
 
-def run_training_loop(model, optimizer):
+def run_training_loop(model, optimizer, start_step: int = 0):
     times.clear()
     toks.clear()
-    for step in range(max_steps):
+    for step in range(start_step, max_steps):
         print()
         is_last_step = step == (max_steps - 1)
         t0 = time.time()
@@ -588,16 +588,8 @@ def run_training_loop(model, optimizer):
             checkpoint_path = os.path.join(log_dir, f"gpt2_checkpoint_step{step}.pt")
             print(f"saving checkpoint to {checkpoint_path}")
             raw_model = get_raw_model(model)
-            checkpoint = {
-                'model': raw_model.state_dict(),
-                'config': raw_model.config,
-                'step': step,
-                'rng_state': torch.get_rng_state(),
-                'cuda_rng_state': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-                'val_loss': loss_accumulated,
-                'optimizer': optimizer.state_dict(),
-            }
-            torch.save(checkpoint, checkpoint_path)
+            save_checkpoint(checkpoint_path, raw_model, optimizer, step, loss_accumulated)
+            
         optimizer.step()
         synchronize_device()
         t1 = time.time()
@@ -614,6 +606,45 @@ def finalize_training():
     if ddp:
         destroy_process_group()
 
+LOAD_EXISTING_FILE = True
+CHECKPOINT_FILE = os.path.join(log_dir, "gpt2_checkpoint_step600.pt")
+
+from torch.serialization import add_safe_globals
+from dataclasses import dataclass, asdict
+
+def _to_cpu_bytetensor(x):
+    if isinstance(x,torch.Tensor):
+        return x.detach().to('cpu').to(torch.uint8).contiguous()
+    return torch.as_tensor(x,dtype=torch.uint8,device='cpu').contiguous()
+
+def save_checkpoint(path, raw_model, optimizer, step, val_loss):
+    ckpt={
+      'model': raw_model.state_dict(),
+      'config': asdict(raw_model.config),
+      'step': step,
+      'rng_state': torch.get_rng_state(),
+      'cuda_rng_state': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+      'val_loss': float(val_loss),
+      'optimizer': optimizer.state_dict() if optimizer is not None else None,
+    }
+    torch.save(ckpt,path)
+
+
+add_safe_globals([GPTConfig])  # tu fais ça une fois au démarrage
+def load_checkpoint(path, raw_model, optimizer=None, device='cpu'):
+    ckpt=torch.load(path,map_location='cpu',weights_only=True)
+    raw_model.load_state_dict(ckpt['model'])
+    if optimizer is not None and ckpt.get('optimizer') is not None:
+        optimizer.load_state_dict(ckpt['optimizer'])
+    if 'rng_state'in ckpt and ckpt['rng_state'] is not None:
+        torch.set_rng_state(_to_cpu_bytetensor(ckpt['rng_state']))
+    if torch.cuda.is_available() and ckpt.get('cuda_rng_state') is not None:
+        states=ckpt['cuda_rng_state']
+        if isinstance(states,(list,tuple)):
+            torch.cuda.set_rng_state_all([_to_cpu_bytetensor(s) for s in states])
+        else:
+            torch.cuda.set_rng_state(_to_cpu_bytetensor(states))
+    return ckpt
 
 def main():
     initialize_distributed_mode()
@@ -625,10 +656,16 @@ def main():
     model = build_model()
     raw_model = get_raw_model(model)
     optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)  # type: ignore
-    run_training_loop(model, optimizer)
+    if LOAD_EXISTING_FILE and os.path.exists(CHECKPOINT_FILE):
+        print(f"Loading checkpoint {CHECKPOINT_FILE}")
+        ckpt = load_checkpoint(CHECKPOINT_FILE, raw_model, optimizer, device=device)
+        start_step = int(ckpt.get('step', 0))
+        print(f"Resumed from step {start_step}, val_loss={ckpt.get('val_loss'):.3f}")
+
+    run_training_loop(model, optimizer, start_step=start_step)
     finalize_training()
 
-
+    
 if __name__ == "__main__":
     main()
 
