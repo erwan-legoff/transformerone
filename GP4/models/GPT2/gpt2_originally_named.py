@@ -542,7 +542,7 @@ def synchronize_device():
 def log_step(step, loss_accumulated, norm, lr, dt, tokens_per_second):
     if not master_process:
         return
-    print(f"step {step} | loss: {loss_accumulated:.1f} | norm: {norm:.2f} | learning {lr:.4e} | time:{dt:.0f}ms | {tokens_per_second:.0f}tokens/s")
+    print(f"step {step} | loss: {loss_accumulated:.2f} | norm: {norm:.2f} | learning {lr:.3e} | time:{dt:.0f}ms | {tokens_per_second:.0f}tokens/s")
     step_left = max_steps - (step + 1)
     time_left = step_left * (sum(times) / len(times)) / 1000
     h = math.floor(time_left / 3600)
