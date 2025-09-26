@@ -345,13 +345,31 @@ class DataLoaderLite:
         
 
     def next_batch(self):
+        total_tokens = len(self.tokens)
         BATCH_SIZE, TIME_SIZE = self.B, self.T
-        buffer = self.tokens[self.current_position : self.current_position+BATCH_SIZE*TIME_SIZE+1] # type: ignore
+        TOKENS_COUNT = BATCH_SIZE * TIME_SIZE
+        min_offset = int(-min(TOKENS_COUNT/2,self.current_position))
+        tokens_ahead = TOKENS_COUNT*1.5
+        max_offset = int(min(tokens_ahead,total_tokens-TOKENS_COUNT-1))
+        random_offset = random.randint(min_offset,max_offset)
+        randomised_position = random_offset + self.current_position
+        random_shard = random.randint(0, len(self.shards)-1)
+        self.current_shard = random_shard
+        if(randomised_position + TOKENS_COUNT + 1 > total_tokens):
+            randomised_position = 0
+            self.current_position = randomised_position + self.B * self.T * self.process_rank
+            random_shard = random.randint(0, len(self.shards)-1)
+            self.current_shard = random_shard
+        
+        
+        buffer = self.tokens[randomised_position : randomised_position+TOKENS_COUNT+1] # type: ignore
+        # print(f"shard {self.current_shard} pos {self.current_position} rand {randomised_position} min_offset {min_offset} max_offset {max_offset} offset {random_offset}")
+        
         inputs = buffer[:-1].view(BATCH_SIZE, TIME_SIZE)
         solutions = buffer[1:].view(BATCH_SIZE, TIME_SIZE)
-        self.current_position += BATCH_SIZE * TIME_SIZE * self.gpu_count
+        self.current_position = randomised_position + TOKENS_COUNT * self.gpu_count
         # if loading the next batch would be out of bounds, advance to next shard
-        if self.current_position + (BATCH_SIZE * TIME_SIZE * self.gpu_count + 1) > len(self.tokens):
+        if self.current_position + (tokens_ahead * self.gpu_count + 1) > total_tokens:
             self.current_shard = (self.current_shard + 1) % len(self.shards)
             self.tokens = load_tokens(self.shards[self.current_shard])
             # reset position for this process/gpu
@@ -585,7 +603,7 @@ def run_training_loop(model, optimizer, start_step: int = 0):
         loss_accumulated, norm = perform_training_iteration(model, optimizer)
         lr = update_learning_rate(optimizer, step)
         if step > 0 and step % CHECKPOINT_INTERVAL == 0 and master_process:
-            checkpoint_path = os.path.join(log_dir, f"gpt2_checkpoint_step{step}.pt")
+            checkpoint_path = os.path.join(log_dir, f"gpt2_v1_checkpoint_step{step}.pt")
             print(f"saving checkpoint to {checkpoint_path}")
             raw_model = get_raw_model(model)
             save_checkpoint(checkpoint_path, raw_model, optimizer, step, loss_accumulated)
@@ -607,7 +625,7 @@ def finalize_training():
         destroy_process_group()
 
 LOAD_EXISTING_FILE = True
-CHECKPOINT_FILE = os.path.join(log_dir, "gpt2_checkpoint_step600.pt")
+CHECKPOINT_FILE = os.path.join(log_dir, "gpt2_v1_checkpoint_step1100.pt")
 
 from torch.serialization import add_safe_globals
 from dataclasses import dataclass, asdict
@@ -656,12 +674,13 @@ def main():
     model = build_model()
     raw_model = get_raw_model(model)
     optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)  # type: ignore
+    start_step = 0
     if LOAD_EXISTING_FILE and os.path.exists(CHECKPOINT_FILE):
         print(f"Loading checkpoint {CHECKPOINT_FILE}")
         ckpt = load_checkpoint(CHECKPOINT_FILE, raw_model, optimizer, device=device)
         start_step = int(ckpt.get('step', 0))
         print(f"Resumed from step {start_step}, val_loss={ckpt.get('val_loss'):.3f}")
-
+    
     run_training_loop(model, optimizer, start_step=start_step)
     finalize_training()
 
