@@ -246,13 +246,13 @@ TOTAL_BATCH_SIZE = 524288  # 512K tokens per batch
 B = 8
 T = 1024
 TRAIN_LOADER_BATCH_SIZE = 8  # actual batch size per GPU
-EVAL_INTERVAL = 100
+EVAL_INTERVAL = 50
 HELLOSWAG_EVAL_INTERVAL = 100
 GENERATE_INTERVAL = 50
 CHECKPOINT_INTERVAL = 100
-TEXT_PROMPT = "Java is a"
-NUM_GENERATION_SEQUENCES = 4
-MAX_GENERATION_LENGTH = 50
+TEXT_PROMPT = "A computer"
+NUM_GENERATION_SEQUENCES = 8
+MAX_GENERATION_LENGTH = 100
 TOP_K = 50
 GRAD_CLIP = 1.0
 
@@ -348,9 +348,10 @@ class DataLoaderLite:
         total_tokens = len(self.tokens)
         BATCH_SIZE, TIME_SIZE = self.B, self.T
         TOKENS_COUNT = BATCH_SIZE * TIME_SIZE
-        min_offset = int(-min(TOKENS_COUNT/2,self.current_position))
-        tokens_ahead = TOKENS_COUNT*1.5
-        max_offset = int(min(tokens_ahead,total_tokens-TOKENS_COUNT-1))
+        
+        tokens_ahead = max(0,total_tokens - (self.current_position + TOKENS_COUNT + 1))
+        max_offset = int(min(tokens_ahead,total_tokens-TOKENS_COUNT-1,total_tokens/100))
+        min_offset = -int(min(self.current_position,max_offset))
         random_offset = random.randint(min_offset,max_offset)
         randomised_position = random_offset + self.current_position
         random_shard = random.randint(0, len(self.shards)-1)
@@ -369,7 +370,7 @@ class DataLoaderLite:
         solutions = buffer[1:].view(BATCH_SIZE, TIME_SIZE)
         self.current_position = randomised_position + TOKENS_COUNT * self.gpu_count
         # if loading the next batch would be out of bounds, advance to next shard
-        if self.current_position + (tokens_ahead * self.gpu_count + 1) > total_tokens:
+        if self.current_position + TOKENS_COUNT + 1 > total_tokens:
             self.current_shard = (self.current_shard + 1) % len(self.shards)
             self.tokens = load_tokens(self.shards[self.current_shard])
             # reset position for this process/gpu
@@ -414,8 +415,8 @@ def get_raw_model(model):
 times = []
 toks = []
 encoder = tiktoken.get_encoding("gpt2")
-max_learning_rate = 6e-4 * 3
-min_learning_rate = max_learning_rate / 30
+max_learning_rate = 6e-4
+min_learning_rate = max_learning_rate / 10
 warmup_steps = 200
 max_steps = 19073
 
@@ -494,7 +495,7 @@ def run_validation(model):
     if ddp:
         dist.all_reduce(eval_loss_accumulated, op=dist.ReduceOp.AVG)
     if master_process:
-        print(f"VALIDATION LOSS: {eval_loss_accumulated:.1f}")
+        print(f"VALIDATION LOSS: {eval_loss_accumulated:.4f}")
 
 
 
@@ -595,7 +596,7 @@ def run_training_loop(model, optimizer, start_step: int = 0):
                 num_correct_norm = num_correct_norm.item()
             accuracy_norm = num_correct_norm / num_total
             if master_process:
-                print(f"HellaSwag accuracy norm: {num_correct_norm}/{num_total}={accuracy_norm:.2f}")
+                print(f"HellaSwag accuracy norm: {num_correct_norm}/{num_total}={accuracy_norm:.3f}")
                 with open(log_file, "a") as f:
                     f.write(f"{step},{accuracy_norm:.4f}\n")
 
@@ -624,8 +625,7 @@ def finalize_training():
     if ddp:
         destroy_process_group()
 
-LOAD_EXISTING_FILE = True
-CHECKPOINT_FILE = os.path.join(log_dir, "gpt2_v1_checkpoint_step1100.pt")
+
 
 from torch.serialization import add_safe_globals
 from dataclasses import dataclass, asdict
@@ -663,7 +663,8 @@ def load_checkpoint(path, raw_model, optimizer=None, device='cpu'):
         else:
             torch.cuda.set_rng_state(_to_cpu_bytetensor(states))
     return ckpt
-
+LOAD_EXISTING_FILE = True
+CHECKPOINT_FILE = os.path.join(log_dir, "gpt2_v1_checkpoint_step6600.pt")
 def main():
     initialize_distributed_mode()
     print(f"using device {device}")
