@@ -33,10 +33,8 @@ def get_most_likely_completion(tokens, mask, logits):
 
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, "gpt2_log.txt")
+log_file = os.path.join(log_dir, "gpt2_v2_log.txt")
 # open for writing to clear it
-with open(log_file, "w") as f:
-    f.write("")
 
 
 class CausalSelfAttention(nn.Module):
@@ -133,6 +131,19 @@ class GPT(nn.Module):
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.transformer.wte.weight = self.lm_head.weight  # type: ignore
         self.apply(self.init_weights)
+        real_vocab = 50257
+        if config.vocab_size > real_vocab:
+            with torch.no_grad():
+                # poids à zéro
+                self.lm_head.weight[real_vocab:] = 0
+                # si bias activé → gros négatif
+                if self.lm_head.bias is not None:
+                    self.lm_head.bias[real_vocab:] = -1e9
+
+            # freeze pour que l’optimiseur ne les modifie pas
+            # self.lm_head.weight[real_vocab:].requires_grad_(False)
+            # if self.lm_head.bias is not None:
+            #     self.lm_head.bias[real_vocab:].requires_grad_(False)
 
     def init_weights(self, module):
         std = 0.02
@@ -247,14 +258,14 @@ B = 8
 T = 1024
 TRAIN_LOADER_BATCH_SIZE = 8  # actual batch size per GPU
 EVAL_INTERVAL = 50
-HELLOSWAG_EVAL_INTERVAL = 100
+HELLOSWAG_EVAL_INTERVAL = 199
 GENERATE_INTERVAL = 50
-CHECKPOINT_INTERVAL = 100
+CHECKPOINT_INTERVAL = 200
 TEXT_PROMPT = "A computer"
 NUM_GENERATION_SEQUENCES = 8
 MAX_GENERATION_LENGTH = 100
 TOP_K = 50
-GRAD_CLIP = 1.0
+GRAD_CLIP = 2.0
 
 import tiktoken
 import numpy as np
@@ -415,9 +426,9 @@ def get_raw_model(model):
 times = []
 toks = []
 encoder = tiktoken.get_encoding("gpt2")
-max_learning_rate = 6e-4
-min_learning_rate = max_learning_rate / 10
-warmup_steps = 200
+max_learning_rate = 3*6e-4
+min_learning_rate = max_learning_rate / 100
+warmup_steps = 800
 max_steps = 19073
 
 
@@ -438,7 +449,7 @@ def autocast_settings(device: str):
 
     device may be 'cuda', 'cuda:0', 'cpu', or 'mps'."""
     if isinstance(device, str) and device.startswith("cuda"):
-        return "cuda", torch.bfloat16
+        return "cuda", torch.float16
     elif device == "cpu":
         # CPU supports bfloat16 on modern PyTorch builds
         return "cpu", torch.bfloat16
@@ -543,7 +554,7 @@ def synchronize_device():
 def log_step(step, loss_accumulated, norm, lr, dt, tokens_per_second):
     if not master_process:
         return
-    print(f"step {step} | loss: {loss_accumulated:.2f} | norm: {norm:.2f} | learning {lr:.3e} | time:{dt:.0f}ms | {tokens_per_second:.0f}tokens/s")
+    print(f"step {step} | loss: {loss_accumulated:.2f} | norm: {norm:.2f} | learning {lr:.3e} | update {norm*lr:.3e} |time:{dt:.0f}ms | {tokens_per_second:.0f}tokens/s")
     step_left = max_steps - (step + 1)
     time_left = step_left * (sum(times) / len(times)) / 1000
     h = math.floor(time_left / 3600)
@@ -563,12 +574,12 @@ def run_training_loop(model, optimizer, start_step: int = 0):
     for step in range(start_step, max_steps):
         print()
         is_last_step = step == (max_steps - 1)
-        t0 = time.time()
+        
         if step % EVAL_INTERVAL == 0 or is_last_step:
             run_validation(model)
         if step % (GENERATE_INTERVAL) == 0 or is_last_step:
             maybe_generate_text(model)
-        if step % HELLOSWAG_EVAL_INTERVAL == 0 or is_last_step:
+        if (step % HELLOSWAG_EVAL_INTERVAL == 0 and step > 0) or is_last_step :
             num_correct_norm = 0
             num_total = 0
             for i, example in enumerate(iterate_examples("val")):
@@ -600,11 +611,11 @@ def run_training_loop(model, optimizer, start_step: int = 0):
                 with open(log_file, "a") as f:
                     f.write(f"{step},{accuracy_norm:.4f}\n")
 
-
+        t0 = time.time()
         loss_accumulated, norm = perform_training_iteration(model, optimizer)
         lr = update_learning_rate(optimizer, step)
         if step > 0 and step % CHECKPOINT_INTERVAL == 0 and master_process:
-            checkpoint_path = os.path.join(log_dir, f"gpt2_v1_checkpoint_step{step}.pt")
+            checkpoint_path = os.path.join(log_dir, f"gpt2_v2_checkpoint_step{step}.pt")
             print(f"saving checkpoint to {checkpoint_path}")
             raw_model = get_raw_model(model)
             save_checkpoint(checkpoint_path, raw_model, optimizer, step, loss_accumulated)
@@ -636,22 +647,44 @@ def _to_cpu_bytetensor(x):
     return torch.as_tensor(x,dtype=torch.uint8,device='cpu').contiguous()
 
 def save_checkpoint(path, raw_model, optimizer, step, val_loss):
-    ckpt={
-      'model': raw_model.state_dict(),
-      'config': asdict(raw_model.config),
-      'step': step,
-      'rng_state': torch.get_rng_state(),
-      'cuda_rng_state': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-      'val_loss': float(val_loss),
-      'optimizer': optimizer.state_dict() if optimizer is not None else None,
+    # on récupère le state_dict du modèle
+    state_dict = raw_model.state_dict()
+
+    # 🟢 Nettoyage : si jamais les clés commencent par "_orig_mod.", on les retire
+    if any(k.startswith("_orig_mod.") for k in state_dict.keys()):
+        print("Cleaning state_dict before saving (removing _orig_mod. prefix)")
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+
+    ckpt = {
+        'model': state_dict,
+        'config': asdict(raw_model.config),
+        'step': step,
+        'rng_state': torch.get_rng_state(),
+        'cuda_rng_state': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        'val_loss': float(val_loss),
+        'optimizer': optimizer.state_dict() if optimizer is not None else None,
     }
-    torch.save(ckpt,path)
+    torch.save(ckpt, path)
 
 
 add_safe_globals([GPTConfig])  # tu fais ça une fois au démarrage
 def load_checkpoint(path, raw_model, optimizer=None, device='cpu'):
-    ckpt=torch.load(path,map_location='cpu',weights_only=True)
-    raw_model.load_state_dict(ckpt['model'])
+    ckpt = torch.load(path, map_location='cpu', weights_only=True)
+    state_dict = ckpt['model']
+
+    # Vérifie si le modèle attendu est optimisé (torch.compile)
+    needs_orig = any(k.startswith("_orig_mod.") for k in raw_model.state_dict().keys())
+
+    if needs_orig and not any(k.startswith("_orig_mod.") for k in state_dict.keys()):
+        print("Adding _orig_mod. prefix to state_dict keys")
+        state_dict = {f"_orig_mod.{k}": v for k, v in state_dict.items()}
+    elif not needs_orig and any(k.startswith("_orig_mod.") for k in state_dict.keys()):
+        print("Stripping _orig_mod. prefix from state_dict keys")
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+
+    raw_model.load_state_dict(state_dict, strict=True)  # ⚠️ strict=True obligatoire
+
+    # Optimizer & RNG
     if optimizer is not None and ckpt.get('optimizer') is not None:
         optimizer.load_state_dict(ckpt['optimizer'])
     if 'rng_state'in ckpt and ckpt['rng_state'] is not None:
@@ -664,7 +697,7 @@ def load_checkpoint(path, raw_model, optimizer=None, device='cpu'):
             torch.cuda.set_rng_state(_to_cpu_bytetensor(states))
     return ckpt
 LOAD_EXISTING_FILE = True
-CHECKPOINT_FILE = os.path.join(log_dir, "gpt2_v1_checkpoint_step6600.pt")
+CHECKPOINT_FILE = os.path.join(log_dir, "gpt2_v2_checkpoint_step500.pt")
 def main():
     initialize_distributed_mode()
     print(f"using device {device}")
