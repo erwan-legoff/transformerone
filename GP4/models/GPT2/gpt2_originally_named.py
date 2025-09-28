@@ -131,19 +131,47 @@ class GPT(nn.Module):
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.transformer.wte.weight = self.lm_head.weight  # type: ignore
         self.apply(self.init_weights)
-        real_vocab = 50257
-        if config.vocab_size > real_vocab:
-            with torch.no_grad():
-                # poids à zéro
-                self.lm_head.weight[real_vocab:] = 0
-                # si bias activé → gros négatif
-                if self.lm_head.bias is not None:
-                    self.lm_head.bias[real_vocab:] = -1e9
+        self.sanitize_vocab_tail()
 
-            # freeze pour que l’optimiseur ne les modifie pas
-            # self.lm_head.weight[real_vocab:].requires_grad_(False)
-            # if self.lm_head.bias is not None:
-            #     self.lm_head.bias[real_vocab:].requires_grad_(False)
+    def sanitize_vocab_tail(self, optimizer=None, real_vocab=50257):
+        """Neutralise les colonnes du vocab étendu (si présentes).
+
+        Cette méthode remet à zéro les poids/biais de la "queue" de vocabulaire,
+        et purge aussi l'état de l'optimiseur pour ces entrées si besoin. Elle est
+        idempotente et peut donc être appelée à l'init mais aussi après un
+        `load_state_dict` pour éviter qu'un checkpoint ne réactive ces
+        paramètres."""
+
+        if self.config.vocab_size <= real_vocab:
+            return
+
+        tail_slice = slice(real_vocab, None)
+        with torch.no_grad():
+            self.lm_head.weight[tail_slice].zero_()
+            if self.lm_head.bias is not None:
+                self.lm_head.bias[tail_slice] = -1e9
+
+        if optimizer is None:
+            return
+
+        weight_state = optimizer.state.get(self.lm_head.weight)
+        if weight_state is not None:
+            exp_avg = weight_state.get('exp_avg')
+            if exp_avg is not None:
+                exp_avg[tail_slice].zero_()
+            exp_avg_sq = weight_state.get('exp_avg_sq')
+            if exp_avg_sq is not None:
+                exp_avg_sq[tail_slice].zero_()
+
+        if self.lm_head.bias is not None:
+            bias_state = optimizer.state.get(self.lm_head.bias)
+            if bias_state is not None:
+                exp_avg = bias_state.get('exp_avg')
+                if exp_avg is not None:
+                    exp_avg[tail_slice].zero_()
+                exp_avg_sq = bias_state.get('exp_avg_sq')
+                if exp_avg_sq is not None:
+                    exp_avg_sq[tail_slice].zero_()
 
     def init_weights(self, module):
         std = 0.02
@@ -169,6 +197,11 @@ class GPT(nn.Module):
         # On se propage dans le dernier layer de normalization
         x = self.transformer.ln_f(x) # type: ignore
         logits = self.lm_head(x)
+
+        real_vocab = 50257
+        if self.config.vocab_size > real_vocab:
+            tail_slice = slice(real_vocab, None)
+            logits[..., tail_slice] = torch.finfo(logits.dtype).min
 
         loss = None 
         if(targets is not None):
@@ -683,10 +716,15 @@ def load_checkpoint(path, raw_model, optimizer=None, device='cpu'):
         state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
 
     raw_model.load_state_dict(state_dict, strict=True)  # ⚠️ strict=True obligatoire
+    # Le tying peut être rompu par torch.compile/load_state_dict : on le ré-affecte systématiquement.
+    raw_model.transformer.wte.weight = raw_model.lm_head.weight  # type: ignore
 
     # Optimizer & RNG
     if optimizer is not None and ckpt.get('optimizer') is not None:
         optimizer.load_state_dict(ckpt['optimizer'])
+    # Neutralise la "queue" du vocabulaire pour éviter qu'un ancien checkpoint ne la réactive
+    # et purge les statistiques de l'optimiseur désormais chargées.
+    raw_model.sanitize_vocab_tail(optimizer)
     if 'rng_state'in ckpt and ckpt['rng_state'] is not None:
         torch.set_rng_state(_to_cpu_bytetensor(ckpt['rng_state']))
     if torch.cuda.is_available() and ckpt.get('cuda_rng_state') is not None:
