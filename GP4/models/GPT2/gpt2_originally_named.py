@@ -37,6 +37,17 @@ log_file = os.path.join(log_dir, "gpt2_v2_log.txt")
 # open for writing to clear it
 
 
+REAL_VOCAB_SIZE = 50257
+
+
+def _tail_mask_value(dtype: torch.dtype) -> float:
+    """Return a large negative value suitable for masking logits for `dtype`."""
+
+    info = torch.finfo(dtype)
+    # Using the minimum finite value keeps gradients well-behaved across dtypes.
+    return info.min
+
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -131,14 +142,13 @@ class GPT(nn.Module):
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.transformer.wte.weight = self.lm_head.weight  # type: ignore
         self.apply(self.init_weights)
-        real_vocab = 50257
-        if config.vocab_size > real_vocab:
+        if config.vocab_size > REAL_VOCAB_SIZE:
             with torch.no_grad():
                 # poids à zéro
-                self.lm_head.weight[real_vocab:] = 0
+                self.lm_head.weight[REAL_VOCAB_SIZE:] = 0
                 # si bias activé → gros négatif
                 if self.lm_head.bias is not None:
-                    self.lm_head.bias[real_vocab:] = -1e9
+                    self.lm_head.bias[REAL_VOCAB_SIZE:] = -1e9
 
             # freeze pour que l’optimiseur ne les modifie pas
             # self.lm_head.weight[real_vocab:].requires_grad_(False)
@@ -169,8 +179,11 @@ class GPT(nn.Module):
         # On se propage dans le dernier layer de normalization
         x = self.transformer.ln_f(x) # type: ignore
         logits = self.lm_head(x)
+        if self.config.vocab_size > REAL_VOCAB_SIZE:
+            # Évite que les colonnes de padding absorbent de la probabilité
+            logits[..., REAL_VOCAB_SIZE:] = _tail_mask_value(logits.dtype)
 
-        loss = None 
+        loss = None
         if(targets is not None):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
 
@@ -423,6 +436,62 @@ def get_raw_model(model):
     return model.module if ddp else model
 
 
+def retie_output_embeddings(raw_model: GPT) -> None:
+    """Ensure the token embedding and lm_head weights share storage."""
+
+    raw_model.transformer.wte.weight = raw_model.lm_head.weight  # type: ignore[arg-type]
+
+
+def sanitize_output_head(raw_model: GPT, optimizer=None, real_vocab: int = REAL_VOCAB_SIZE) -> None:
+    """Zero-out logits beyond the real GPT-2 vocab and clear their optimizer state."""
+
+    with torch.no_grad():
+        weight = raw_model.lm_head.weight
+        if weight.size(0) > real_vocab:
+            weight[real_vocab:].zero_()
+        bias = raw_model.lm_head.bias
+        if bias is not None and bias.size(0) > real_vocab:
+            bias[real_vocab:] = -1e9
+
+    if optimizer is not None:
+        state = optimizer.state.get(raw_model.lm_head.weight)
+        if state:
+            exp_avg = state.get('exp_avg')
+            if exp_avg is not None and exp_avg.size(0) > real_vocab:
+                exp_avg[real_vocab:].zero_()
+            exp_avg_sq = state.get('exp_avg_sq')
+            if exp_avg_sq is not None and exp_avg_sq.size(0) > real_vocab:
+                exp_avg_sq[real_vocab:].zero_()
+
+
+def reconcile_scheduler_with_optimizer_state(step: int, optimizer) -> None:
+    """Adjust the scheduler globals to match the LR stored in the optimizer state."""
+
+    if optimizer is None or not optimizer.param_groups:
+        return
+
+    loaded_lr = optimizer.param_groups[0].get('lr', None)
+    if loaded_lr is None:
+        return
+
+    target_lr = get_learning_rate(step)
+    if target_lr == 0.0 or math.isclose(target_lr, loaded_lr, rel_tol=1e-2, abs_tol=1e-9):
+        return
+
+    global max_learning_rate, min_learning_rate
+    if step < warmup_steps and step > 0:
+        max_learning_rate = loaded_lr * warmup_steps / step
+        min_learning_rate = max_learning_rate / 100
+    else:
+        scale = loaded_lr / target_lr
+        max_learning_rate *= scale
+        min_learning_rate *= scale
+    print(
+        f"[scheduler] Adjusted LR schedule to match optimizer state: "
+        f"max_lr={max_learning_rate:.3e}, min_lr={min_learning_rate:.3e}"
+    )
+
+
 times = []
 toks = []
 encoder = tiktoken.get_encoding("gpt2")
@@ -430,6 +499,26 @@ max_learning_rate = 3*6e-4
 min_learning_rate = max_learning_rate / 100
 warmup_steps = 800
 max_steps = 19073
+
+
+def get_scheduler_state():
+    return {
+        'max_lr': max_learning_rate,
+        'min_lr': min_learning_rate,
+        'warmup_steps': warmup_steps,
+        'max_steps': max_steps,
+    }
+
+
+def apply_scheduler_state(state):
+    if not state:
+        return
+
+    global max_learning_rate, min_learning_rate, warmup_steps, max_steps
+    max_learning_rate = state.get('max_lr', max_learning_rate)
+    min_learning_rate = state.get('min_lr', min_learning_rate)
+    warmup_steps = state.get('warmup_steps', warmup_steps)
+    max_steps = state.get('max_steps', max_steps)
 
 
 def get_learning_rate(step):
@@ -449,6 +538,8 @@ def autocast_settings(device: str):
 
     device may be 'cuda', 'cuda:0', 'cpu', or 'mps'."""
     if isinstance(device, str) and device.startswith("cuda"):
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            return "cuda", torch.bfloat16
         return "cuda", torch.float16
     elif device == "cpu":
         # CPU supports bfloat16 on modern PyTorch builds
@@ -663,6 +754,7 @@ def save_checkpoint(path, raw_model, optimizer, step, val_loss):
         'cuda_rng_state': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
         'val_loss': float(val_loss),
         'optimizer': optimizer.state_dict() if optimizer is not None else None,
+        'scheduler': get_scheduler_state(),
     }
     torch.save(ckpt, path)
 
@@ -683,10 +775,13 @@ def load_checkpoint(path, raw_model, optimizer=None, device='cpu'):
         state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
 
     raw_model.load_state_dict(state_dict, strict=True)  # ⚠️ strict=True obligatoire
+    retie_output_embeddings(raw_model)
+    sanitize_output_head(raw_model)
 
     # Optimizer & RNG
     if optimizer is not None and ckpt.get('optimizer') is not None:
         optimizer.load_state_dict(ckpt['optimizer'])
+        sanitize_output_head(raw_model, optimizer)
     if 'rng_state'in ckpt and ckpt['rng_state'] is not None:
         torch.set_rng_state(_to_cpu_bytetensor(ckpt['rng_state']))
     if torch.cuda.is_available() and ckpt.get('cuda_rng_state') is not None:
@@ -695,6 +790,7 @@ def load_checkpoint(path, raw_model, optimizer=None, device='cpu'):
             torch.cuda.set_rng_state_all([_to_cpu_bytetensor(s) for s in states])
         else:
             torch.cuda.set_rng_state(_to_cpu_bytetensor(states))
+    apply_scheduler_state(ckpt.get('scheduler'))
     return ckpt
 LOAD_EXISTING_FILE = True
 CHECKPOINT_FILE = os.path.join(log_dir, "gpt2_v2_checkpoint_step500.pt")
@@ -714,7 +810,8 @@ def main():
         ckpt = load_checkpoint(CHECKPOINT_FILE, raw_model, optimizer, device=device)
         start_step = int(ckpt.get('step', 0))
         print(f"Resumed from step {start_step}, val_loss={ckpt.get('val_loss'):.3f}")
-    
+        reconcile_scheduler_with_optimizer_state(start_step, optimizer)
+
     run_training_loop(model, optimizer, start_step=start_step)
     finalize_training()
 
