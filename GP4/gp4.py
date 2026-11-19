@@ -3,7 +3,7 @@ import torch
 
 from FileUtils import load_data, write_first_2000_chars_to_file
 from Stats import write_first_1000_tokens_to_file
-from models.ModelHandler import generate_and_print_text, generate_print_and_save_text, load_checkpoint, save_checkpoint
+from models.ModelHandler import generate_and_print_text, generate_print_and_save_text, load_training_checkpoint, save_checkpoint
 from models.Trainer import calculate_mean_losses, calculate_short_mean_losses, get_batch, train
 from tokenizer_one import create_vocabularies_V2, create_vocabularies_GPT4_like, detokenize, load_tokenizer, prepare_tokenized_data, tokenize
 from models.GptOne.GptOne import GptOne
@@ -50,13 +50,6 @@ if __name__ == '__main__':
     print(f"Taille string_to_int chargée : {len(string_to_int)}")
     print(f"Taille int_to_string chargée : {len(int_to_string)}")
 
-    import json
-    with open("tokenizers/tokenizer_iter1000_skip100_2025-03-14_22h.json", "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    missing_keys = [v for v in string_to_int.values() if v not in int_to_string]
-    # print(f"Tokens manquants dans int_to_string: {missing_keys}")
-
     print(f"Nombre total de tokens dans in to string: {len(int_to_string)}")
     
     print("vocab size")
@@ -93,8 +86,12 @@ if __name__ == '__main__':
         'context_length': context_length,
         'dropout': dropout
     }
-    if(should_load and use_tokenizer):
-        model = load_checkpoint(model=model,checkpoint_path=model_to_load,device=device)
+    training_state = None
+    if should_load:
+        if not use_tokenizer:
+            raise ValueError("Loading a checkpoint requires its original tokenizer")
+        training_state = load_training_checkpoint(
+            model, model_to_load, device, allow_legacy_unknown_token=True)
     # Entraînement
     if(should_train):
         train(model,
@@ -122,7 +119,8 @@ if __name__ == '__main__':
             string_to_int,
             detokenize,
             int_to_string,
-            hyperparams)
+            hyperparams,
+            training_state=training_state)
 
     # Génération finale et sauvegarde
     starting_context = torch.tensor(tokenize(final_testing_sentence, string_to_int), dtype=torch.long, device=device).unsqueeze(0)

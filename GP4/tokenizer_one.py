@@ -13,9 +13,12 @@ def to_decomposed_unicode(text: str) -> str:
 def to_unified_unicode(text: str) -> str:
     return unicodedata.normalize('NFC', text)
 
-def tokenize(text, string_to_int, max_gram_chars= 8):
+UNKNOWN_TOKEN = "<unk>"
+
+
+def tokenize(text, string_to_int, max_gram_chars=8):
     text = to_decomposed_unicode(text)
-    unknown_token = 0 
+    unknown_token = string_to_int.get(UNKNOWN_TOKEN)
     int_tokens = []
     c = 0
     while c < len(text):
@@ -24,15 +27,16 @@ def tokenize(text, string_to_int, max_gram_chars= 8):
         not_found = True
         while not_found and current_char_size > 0:
             current_n_gram = text[c:c+current_char_size]
-            if(current_n_gram in string_to_int):
+            if current_n_gram != UNKNOWN_TOKEN and current_n_gram in string_to_int:
                 int_tokens.append(string_to_int[current_n_gram]) 
                 not_found = False
             else:
                 current_char_size-=1
             
         if not_found:
-            token = string_to_int.get(text[c], unknown_token)
-            int_tokens.append(token)
+            if unknown_token is None:
+                raise ValueError(f"No <unk> token for character {text[c]!r}")
+            int_tokens.append(unknown_token)
             c += 1
         else:
             c += current_char_size
@@ -49,6 +53,11 @@ def load_tokenizer(tokenizer_path):
     # We convert back keys to int
     int_to_string = {int(key): value for key, value in tokenizer_data["int_to_string"].items()}
     
+    if UNKNOWN_TOKEN not in string_to_int:
+        unknown_id = max(int_to_string, default=-1) + 1
+        string_to_int[UNKNOWN_TOKEN] = unknown_id
+        int_to_string[unknown_id] = UNKNOWN_TOKEN
+
     print(f"Tokenizer loaded: {tokenizer_path}")
 
     return string_to_int, int_to_string
@@ -84,10 +93,11 @@ def create_vocabularies_V2(training_text,
                         max_char_skip = 100):
     print('TOKENIZER ITERATIONS:')
     print()
+    training_text = to_decomposed_unicode(training_text)
     char_occurences = count_char_occurences(training_text)
     sorted_chars = sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)
     top_chars = dict(sorted_chars)
-    current_vocabulary = list(top_chars.keys())
+    current_vocabulary = [*top_chars, UNKNOWN_TOKEN]
     # Juste après avoir construit top_chars et current_vocabulary:
     all_chars_in_text = set(training_text)  # l'ensemble de tous les caractères distincts
     dict_chars = set(current_vocabulary)    # l'ensemble des chars que vous avez retenus
@@ -104,7 +114,7 @@ def create_vocabularies_V2(training_text,
     # 1. **Count char occurrences**
     for i in range(tokenization_iteration):
         print("bigram_occurences_start")
-        bigram_occurences = count_n_gram_occurences_optimized(tokenized_compressed_text, gram_size=2,max_char_skip=max_char_skip,)
+        bigram_occurences = count_n_gram_occurences_optimized(tokenized_compressed_text, gram_size=2, max_char_skip=max_char_skip, stats_cumulator={})
         print("bigram_occurences_end")
 
         sorted_bigrams = sorted(bigram_occurences.items(), key=lambda item: item[1], reverse=True)
@@ -121,12 +131,12 @@ def create_vocabularies_V2(training_text,
                                      current_int_to_string.get(current_top_bigram_ints[1], "")
 
 
-        current_vocabulary.append(current_top_bigram_strings)
-
-        
-        new_token_id = len(current_string_to_int)
-        current_string_to_int[current_top_bigram_strings] = new_token_id
-        current_int_to_string[new_token_id] = current_top_bigram_strings
+        new_token_id = current_string_to_int.get(current_top_bigram_strings)
+        if new_token_id is None:
+            new_token_id = len(current_vocabulary)
+            current_vocabulary.append(current_top_bigram_strings)
+            current_string_to_int[current_top_bigram_strings] = new_token_id
+            current_int_to_string[new_token_id] = current_top_bigram_strings
         print('merge_in_place_start')
         print(i)
         tokenized_compressed_text  = merge_in_place(tokenized_compressed_text, current_top_bigram_ints,new_token_id)
@@ -157,10 +167,11 @@ def create_vocabularies_GPT4_like(training_text,
                         max_char_skip = 100):
     print('TOKENIZER ITERATIONS:')
     print(tokenization_iterations)
+    training_text = to_decomposed_unicode(training_text)
     char_occurences = count_char_occurences(training_text)
     sorted_chars = sorted(char_occurences.items(), key=lambda item: item[1], reverse=True)
     top_chars = dict(sorted_chars)
-    current_vocabulary = list(top_chars.keys())
+    current_vocabulary = [*top_chars, UNKNOWN_TOKEN]
     # Juste après avoir construit top_chars et current_vocabulary:
     all_chars_in_text = set(training_text)  # l'ensemble de tous les caractères distincts
     dict_chars = set(current_vocabulary)    # l'ensemble des chars que vous avez retenus
@@ -201,12 +212,12 @@ def create_vocabularies_GPT4_like(training_text,
                                      current_int_to_string.get(current_top_bigram_ints[1], "")
 
 
-        current_vocabulary.append(current_top_bigram_strings)
-
-        
-        new_token_id = len(current_string_to_int)
-        current_string_to_int[current_top_bigram_strings] = new_token_id
-        current_int_to_string[new_token_id] = current_top_bigram_strings
+        new_token_id = current_string_to_int.get(current_top_bigram_strings)
+        if new_token_id is None:
+            new_token_id = len(current_vocabulary)
+            current_vocabulary.append(current_top_bigram_strings)
+            current_string_to_int[current_top_bigram_strings] = new_token_id
+            current_int_to_string[new_token_id] = current_top_bigram_strings
         print('merge_in_place_start')
         print('token')
         print(current_top_bigram_strings)
