@@ -1,9 +1,11 @@
 import os
 import torch
 import time
+import tempfile
 from FileUtils import *
 
-def save_checkpoint(model, loss, hyperparams, checkpoint_dir="checkpoints", base_name="gpt_wiki_bigram_two"):
+def save_checkpoint(model, loss, hyperparams, checkpoint_dir="checkpoints",
+                    base_name="gpt_wiki_bigram_two", *, optimizer=None, step=0):
     """
     Save the checkpoint with the hyperparameters in the name
     that intrinsically define the model.
@@ -17,8 +19,7 @@ def save_checkpoint(model, loss, hyperparams, checkpoint_dir="checkpoints", base
             'dropout': 0.10
         }
     """
-    if not os.path.exists(checkpoint_dir):
-        os.makedirs(checkpoint_dir)
+    os.makedirs(checkpoint_dir, exist_ok=True)
     
     # Construire une chaîne représentant les hyperparamètres
     hp_str = f"heads{hyperparams['head_count']}_layers{hyperparams['layer_count']}_emb{hyperparams['embedding_dimension_count']}_ctx{hyperparams['context_length']}_drop{hyperparams['dropout']}"
@@ -35,14 +36,56 @@ def save_checkpoint(model, loss, hyperparams, checkpoint_dir="checkpoints", base
     loss_int = int(loss * 10000)
     checkpoint_name = f"{base_name}_{hp_str}_{new_index}_loss{loss_int}.pt"
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
-    torch.save(model.state_dict(), checkpoint_path)
+    state = model.state_dict()
+    if optimizer is not None:
+        state = {
+            "model_state_dict": state,
+            "optimizer_state_dict": optimizer.state_dict(),
+            "step": step,
+        }
+    temporary_file = tempfile.NamedTemporaryFile(dir=checkpoint_dir, delete=False)
+    temporary_path = temporary_file.name
+    try:
+        with temporary_file:
+            torch.save(state, temporary_file)
+        os.replace(temporary_path, checkpoint_path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
     print("Checkpoint sauvegardé :", checkpoint_path)
 
-def load_checkpoint(model, checkpoint_path, device):
-    state_dict = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state_dict)
+
+def load_training_checkpoint(model, checkpoint_path, device, *, allow_legacy_unknown_token=False):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    if "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        training_state = checkpoint
+    else:
+        if allow_legacy_unknown_token:
+            # Appending <unk> leaves all legacy token IDs in their original rows.
+            initialized = model.state_dict()
+            vocabulary_keys = (
+                "token_embedding_table.weight",
+                "language_modeling_head.weight",
+                "language_modeling_head.bias",
+            )
+            if all(
+                checkpoint[key].shape[0] + 1 == initialized[key].shape[0]
+                and checkpoint[key].shape[1:] == initialized[key].shape[1:]
+                for key in vocabulary_keys
+            ):
+                for key in vocabulary_keys:
+                    checkpoint[key] = torch.cat((checkpoint[key], initialized[key][-1:]))
+        model.load_state_dict(checkpoint)
+        training_state = None
     print("Checkpoint chargé depuis :", checkpoint_path)
+    return training_state
+
+
+def load_checkpoint(model, checkpoint_path, device):
+    load_training_checkpoint(model, checkpoint_path, device)
     return model
+
 
 # --- Fonctions de génération de texte ---
 def generate_text(model, detokenize_func, int_to_string, max_new_token_number, context_length, device):

@@ -5,7 +5,6 @@ import time
 import torch
 from datetime import timedelta
 
-from models.ModelHandler import save_checkpoint
 
 
 def get_batch(data_partition_name, training_data, evaluation_data, context_length, batch_size, device):
@@ -62,9 +61,9 @@ def calculate_short_mean_losses(model, training_data, evaluation_data, context_l
 # --- Boucle d'entraînement ---
 def perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_improvement,
                             model, training_data, evaluation_data, context_length, batch_size,
-                            eval_iteration_count, device, get_batch_func, hyperparams):
+                            eval_iteration_count, device, get_batch_func, calculate_mean_losses_func):
     print(f"Evaluating losses at step {step}...")
-    losses = calculate_mean_losses(model, training_data, evaluation_data, context_length, batch_size, eval_iteration_count, device, get_batch_func)
+    losses = calculate_mean_losses_func(model, training_data, evaluation_data, context_length, batch_size, eval_iteration_count, device, get_batch_func)
     print(f"step {step}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
     print(f"Current min_loss: {best_val_loss:.4f}")
     if losses['val'] < best_val_loss:
@@ -74,18 +73,21 @@ def perform_long_evaluation(step, best_val_loss, no_improvement_count, max_no_im
         no_improvement_count += 1
         if no_improvement_count >= max_no_improvement:
             print(f"Validation loss did not improve for {max_no_improvement} consecutive evaluations. Stopping training.")
-            save_checkpoint(model, losses['val'], hyperparams)
-            return True, best_val_loss, no_improvement_count
-    return False, best_val_loss, no_improvement_count
+            return True, best_val_loss, no_improvement_count, losses["val"]
+    return False, best_val_loss, no_improvement_count, losses["val"]
 
 def train(model, training_data, evaluation_data, context_length, batch_size, maximum_training_steps,
           evaluation_interval, short_eval_interval, checkpoint_interval, generate_interval,
           time_estimation_interval, eval_iteration_count, short_eval_iters, learning_rate, device,
           max_new_token_number_preview, generate_and_print_text_func, get_batch_func,
           calculate_mean_losses_func, calculate_short_mean_losses_func, save_checkpoint_func,
-          tokenize_func, string_to_int, detokenize_func, int_to_string, hyperparams):
+          tokenize_func, string_to_int, detokenize_func, int_to_string, hyperparams, *, training_state=None):
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    completed_steps = 0
+    if training_state is not None:
+        optimizer.load_state_dict(training_state["optimizer_state_dict"])
+        completed_steps = training_state["step"]
     print('THE MODEL HAS STARTED TRAINING')
     
     best_val_loss = float('inf')
@@ -96,15 +98,16 @@ def train(model, training_data, evaluation_data, context_length, batch_size, max
     max_short_no_improvement = 500
     starting_timer = time.time()
     
-    for step in range(maximum_training_steps):
-        if step % evaluation_interval == 0 or step == maximum_training_steps - 1:
-            stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(
-                step, best_val_loss, no_improvement_count, max_no_improvement,
-                model, training_data, evaluation_data, context_length, batch_size,
-                eval_iteration_count, device, get_batch_func, hyperparams)
-            if stop_training:
-                break
-        
+    for step in range(completed_steps + 1, maximum_training_steps + 1):
+        random_input_tokens, solution_tokens = get_batch_func(
+            'train', training_data, evaluation_data, context_length, batch_size, device)
+        optimizer.zero_grad(set_to_none=True)
+        _, loss = model(random_input_tokens, solution_tokens)
+        loss.backward()
+        optimizer.step()
+
+        should_save = step % checkpoint_interval == 0 or step == maximum_training_steps
+        should_evaluate = step % evaluation_interval == 0
         if step % short_eval_interval == 0:
             print(f"Performing short evaluation at step {step}...")
             short_losses = calculate_short_mean_losses_func(
@@ -116,40 +119,36 @@ def train(model, training_data, evaluation_data, context_length, batch_size, max
                 short_no_improvement_count = 0
             else:
                 short_no_improvement_count += 1
-                if short_no_improvement_count >= max_short_no_improvement:
-                    stop_training, best_val_loss, no_improvement_count = perform_long_evaluation(
-                        step, best_val_loss, no_improvement_count, max_no_improvement,
-                        model, training_data, evaluation_data, context_length, batch_size,
-                        eval_iteration_count, device, get_batch_func, hyperparams)
-                    if stop_training:
-                        break
-        
-        if step % checkpoint_interval == 0 or step == maximum_training_steps - 1:
-            print(f"Saving checkpoint at step {step}...")
-            save_checkpoint_func(model, best_val_loss, hyperparams)
-        
-        if step % generate_interval == 0 or step == maximum_training_steps - 1:
+                should_evaluate = should_evaluate or short_no_improvement_count >= max_short_no_improvement
+
+        stop_training = False
+        if should_evaluate or should_save:
+            stop_training, best_val_loss, no_improvement_count, val_loss = perform_long_evaluation(
+                step, best_val_loss, no_improvement_count, max_no_improvement,
+                model, training_data, evaluation_data, context_length, batch_size,
+                eval_iteration_count, device, get_batch_func, calculate_mean_losses_func)
+            if should_save or stop_training:
+                print(f"Saving checkpoint at step {step}...")
+                save_checkpoint_func(model, val_loss, hyperparams, optimizer=optimizer, step=step)
+            if stop_training:
+                break
+
+        if step % generate_interval == 0 or step == maximum_training_steps:
             print(f"Generating text at step {step}...")
             starting_context = torch.tensor(tokenize_func("John Lennon est ", string_to_int), dtype=torch.long, device=device).unsqueeze(0)
             generate_and_print_text_func(model, context_length, detokenize_func, int_to_string, max_new_token_number_preview, 1, starting_context)
-        
-        if step % time_estimation_interval == 0 or step == maximum_training_steps - 1:
-            estimate_time(maximum_training_steps, starting_timer, step)
-        
-        random_input_tokens, solution_tokens = get_batch_func('train', training_data, evaluation_data, context_length, batch_size, device)
-        logits, loss = model(random_input_tokens, solution_tokens)
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
-    
+
+        if step % time_estimation_interval == 0 or step == maximum_training_steps:
+            estimate_time(maximum_training_steps, starting_timer, step, completed_steps)
+
     print('Training has finished :)')
     print(datetime.now())
 
-def estimate_time(maximum_training_steps, starting_timer, step):
+def estimate_time(maximum_training_steps, starting_timer, step, completed_steps=0):
     print(f"Estimating remaining time at step {step}...")
     current_time = time.time()
     current_training_duration = current_time - starting_timer
-    minutes_by_step = current_training_duration / (step + 1) / 60
+    minutes_by_step = current_training_duration / (step - completed_steps) / 60
     remaining_steps = maximum_training_steps - step
     remaining_minutes = remaining_steps * minutes_by_step
     predicted_end_time = datetime.now() + timedelta(minutes=remaining_minutes)

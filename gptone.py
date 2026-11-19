@@ -34,31 +34,27 @@ with open('wiki.test.tokens', 'r', encoding='utf-8') as f:
     eval_text = f.read()
 
 
-vocabulary = sorted(list(set(training_text))) # The possible tokens for our model, sorted by ascii value
+vocabulary = sorted(set(training_text)) + ["<unk>"]
 vocabulary_size = len(vocabulary)
 # we create a dictionnary from string to int
 string_to_int = { char:int for int,char in enumerate(vocabulary) } 
 int_to_string = { int:char for int,char in enumerate(vocabulary) } # we create a dictionnary from int to string
 
 # Each character of the string will be converted to tokens encoded in int
-tokenize = lambda string_to_tokenize: [string_to_int[character] for character in string_to_tokenize] 
+tokenize = lambda text: [string_to_int.get(character, string_to_int["<unk>"]) for character in text]
 # each token will be converted into char, and it will be concatenated to form a string
 detokenize = lambda tokens_to_stringify: ''.join([int_to_string[integer] for integer in tokens_to_stringify]) 
 
-# we tokenize our dataset
-tokenized_data = torch.tensor(tokenize(training_text), dtype=torch.long)
-# we train on 90% of the dataset
-training_data_size = training_text
-training_data = eval_text
-# we eval to the remaining 10%
-evaluation_data = tokenized_data[training_data_size:]
+training_data = torch.tensor(tokenize(training_text), dtype=torch.long)
+evaluation_data = torch.tensor(tokenize(eval_text), dtype=torch.long)
 
 # Take 2 random batches in the dataset (input_tokens and solution_tokens)
 def get_batch(data_partition_name):
     # According to the type partition name, we choose between training or eval
     data = training_data if data_partition_name == 'train' else evaluation_data
-    # the max of the strating_offset for the batch, we substract 1 to avoir y overflow
-    max_offset = len(data) - context_length-1
+    max_offset = len(data) - context_length
+    if max_offset <= 0:
+        raise ValueError(f"{data_partition_name} requires at least {context_length + 1} tokens")
     # we take random offsets from the given dataset (without overflowing the size)
     random_start_offsets = torch.randint(max_offset, (batch_size,))
     # for each random start_offset we take a slice of the context length
@@ -311,15 +307,4 @@ def train():
         optimizer.step()
 
 train()
-
-def load_checkpoint(model, checkpoint_path):
-    state_dict = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state_dict)
-    print("Checkpoint chargé depuis :", checkpoint_path)
-
-load_checkpoint(initialized_model, './checkpoints/gptone_2.pt')
-
-
-
-
 print(generate_text(max_new_token_number))
